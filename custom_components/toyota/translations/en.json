@@ -147,6 +147,12 @@
     "button": {
       "refresh_vehicle_status": {
         "name": "Refresh vehicle status"
+      },
+      "buzzer": {
+        "name": "Buzzer"
+      },
+      "hazard": {
+        "name": "Hazard lights"
       }
     },
     "binary_sensor": {

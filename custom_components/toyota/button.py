@@ -1,15 +1,19 @@
 """Toyota button entities.
 
-Two per-vehicle buttons:
+Per-vehicle buttons:
 
 * ``refresh_vehicle_status`` — one-tap wrapper around the
   ``toyota.refresh_vehicle_status`` service (wake POST + status poll).
-* ``find_vehicle`` — fires the ``FIND_VEHICLE`` remote command, which makes
-  the car flash its lights / sound its buzzer so you can locate it nearby.
-  Momentary action with no state to track, so it is a button rather than a
-  switch. (The "where did I park" map view is already covered by the
-  device_tracker entity; this is the close-range "make the car announce
-  itself" signal.)
+* ``buzzer`` — fires the ``BUZZER_WARNING`` remote command (sounds the car's
+  locator buzzer).
+* ``hazard`` — fires the ``HAZARD_ON`` remote command (flashes the hazard
+  lights, which the car then turns off again on its own).
+
+The buzzer and hazard buttons are the "find my car" primitives on this
+platform. They are momentary fire-and-forget actions with no state to track
+(hazard self-stops; there is no working HAZARD_OFF), so they are buttons
+rather than switches. Compose them into a combined "find my car" action with
+a Home Assistant script if you want buzzer + flash together.
 """
 
 from __future__ import annotations
@@ -41,11 +45,18 @@ REFRESH_BUTTON_DESCRIPTION = ButtonEntityDescription(
     icon="mdi:refresh-circle",
 )
 
-FIND_VEHICLE_BUTTON_DESCRIPTION = ButtonEntityDescription(
-    key="find_vehicle",
-    translation_key="find_vehicle",
-    name="Find vehicle",
-    icon="mdi:car-search",
+BUZZER_BUTTON_DESCRIPTION = ButtonEntityDescription(
+    key="buzzer",
+    translation_key="buzzer",
+    name="Buzzer",
+    icon="mdi:bullhorn",
+)
+
+HAZARD_BUTTON_DESCRIPTION = ButtonEntityDescription(
+    key="hazard",
+    translation_key="hazard",
+    name="Hazard lights",
+    icon="mdi:hazard-lights",
 )
 
 
@@ -60,21 +71,19 @@ async def async_setup_entry(
     ]
     entities: list[ButtonEntity] = []
     for index in range(len(coordinator.data)):
+        common = {
+            "coordinator": coordinator,
+            "entry_id": entry.entry_id,
+            "vehicle_index": index,
+        }
         entities.append(
-            ToyotaRefreshStatusButton(
-                coordinator=coordinator,
-                entry_id=entry.entry_id,
-                vehicle_index=index,
-                description=REFRESH_BUTTON_DESCRIPTION,
-            )
+            ToyotaRefreshStatusButton(description=REFRESH_BUTTON_DESCRIPTION, **common)
         )
         entities.append(
-            ToyotaFindVehicleButton(
-                coordinator=coordinator,
-                entry_id=entry.entry_id,
-                vehicle_index=index,
-                description=FIND_VEHICLE_BUTTON_DESCRIPTION,
-            )
+            ToyotaBuzzerButton(description=BUZZER_BUTTON_DESCRIPTION, **common)
+        )
+        entities.append(
+            ToyotaHazardButton(description=HAZARD_BUTTON_DESCRIPTION, **common)
         )
     async_add_entities(entities)
 
@@ -100,12 +109,20 @@ class ToyotaRefreshStatusButton(ToyotaBaseEntity, ButtonEntity):
         )
 
 
-class ToyotaFindVehicleButton(ToyotaBaseEntity, ButtonEntity):
-    """Fire the FIND_VEHICLE remote command (flash/buzzer) for one VIN."""
+class ToyotaRemoteCommandButton(ToyotaBaseEntity, ButtonEntity):
+    """Base for buttons that fire a single fire-and-forget remote command.
+
+    Subclasses set ``_command``. Toyota signals failure either by raising
+    (e.g. an unsupported command 400s) or, less often, by a >=400 ``code`` on
+    the returned status; both are logged. A successful command returns a
+    status whose ``code`` is None, so we do not treat None as an error.
+    """
+
+    _command: CommandType
 
     async def async_press(self) -> None:
-        """Send the FIND_VEHICLE remote command to the car."""
-        command = CommandType.FIND_VEHICLE
+        """Send this button's remote command to the car."""
+        command = self._command
         try:
             _LOGGER.debug("Sending %s to %s", command.value, self.vehicle.alias)
             status = await self.vehicle.post_command(command)
@@ -123,3 +140,15 @@ class ToyotaFindVehicleButton(ToyotaBaseEntity, ButtonEntity):
                 code,
                 getattr(status, "message", None),
             )
+
+
+class ToyotaBuzzerButton(ToyotaRemoteCommandButton):
+    """Sound the car's locator buzzer (BUZZER_WARNING)."""
+
+    _command = CommandType.BUZZER_WARNING
+
+
+class ToyotaHazardButton(ToyotaRemoteCommandButton):
+    """Flash the hazard lights (HAZARD_ON; the car turns them off itself)."""
+
+    _command = CommandType.HAZARD_ON

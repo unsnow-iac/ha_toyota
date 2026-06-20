@@ -1,15 +1,24 @@
-"""Per-vehicle refresh-status button.
+"""Toyota button entities.
 
-Wraps the toyota.refresh_vehicle_status service with a one-tap dashboard
-entity. Each vehicle gets one button; pressing it triggers the same wake
-POST + status poll that the service does.
+Two per-vehicle buttons:
+
+* ``refresh_vehicle_status`` — one-tap wrapper around the
+  ``toyota.refresh_vehicle_status`` service (wake POST + status poll).
+* ``find_vehicle`` — fires the ``FIND_VEHICLE`` remote command, which makes
+  the car flash its lights / sound its buzzer so you can locate it nearby.
+  Momentary action with no state to track, so it is a button rather than a
+  switch. (The "where did I park" map view is already covered by the
+  device_tracker entity; this is the close-range "make the car announce
+  itself" signal.)
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
+from pytoyoda.models.endpoints.command import CommandType
 
 from .const import DOMAIN
 from .entity import ToyotaBaseEntity
@@ -22,12 +31,21 @@ if TYPE_CHECKING:
 
     from . import VehicleData
 
+_LOGGER = logging.getLogger(__name__)
+
 
 REFRESH_BUTTON_DESCRIPTION = ButtonEntityDescription(
     key="refresh_vehicle_status",
     translation_key="refresh_vehicle_status",
     name="Refresh vehicle status",
     icon="mdi:refresh-circle",
+)
+
+FIND_VEHICLE_BUTTON_DESCRIPTION = ButtonEntityDescription(
+    key="find_vehicle",
+    translation_key="find_vehicle",
+    name="Find vehicle",
+    icon="mdi:car-search",
 )
 
 
@@ -40,15 +58,25 @@ async def async_setup_entry(
     coordinator: DataUpdateCoordinator[list[VehicleData]] = hass.data[DOMAIN][
         entry.entry_id
     ]
-    async_add_entities(
-        ToyotaRefreshStatusButton(
-            coordinator=coordinator,
-            entry_id=entry.entry_id,
-            vehicle_index=index,
-            description=REFRESH_BUTTON_DESCRIPTION,
+    entities: list[ButtonEntity] = []
+    for index in range(len(coordinator.data)):
+        entities.append(
+            ToyotaRefreshStatusButton(
+                coordinator=coordinator,
+                entry_id=entry.entry_id,
+                vehicle_index=index,
+                description=REFRESH_BUTTON_DESCRIPTION,
+            )
         )
-        for index in range(len(coordinator.data))
-    )
+        entities.append(
+            ToyotaFindVehicleButton(
+                coordinator=coordinator,
+                entry_id=entry.entry_id,
+                vehicle_index=index,
+                description=FIND_VEHICLE_BUTTON_DESCRIPTION,
+            )
+        )
+    async_add_entities(entities)
 
 
 class ToyotaRefreshStatusButton(ToyotaBaseEntity, ButtonEntity):
@@ -70,3 +98,28 @@ class ToyotaRefreshStatusButton(ToyotaBaseEntity, ButtonEntity):
             {"device_id": [device.id]},
             blocking=False,
         )
+
+
+class ToyotaFindVehicleButton(ToyotaBaseEntity, ButtonEntity):
+    """Fire the FIND_VEHICLE remote command (flash/buzzer) for one VIN."""
+
+    async def async_press(self) -> None:
+        """Send the FIND_VEHICLE remote command to the car."""
+        command = CommandType.FIND_VEHICLE
+        try:
+            _LOGGER.debug("Sending %s to %s", command.value, self.vehicle.alias)
+            status = await self.vehicle.post_command(command)
+        except Exception:  # noqa: BLE001  # pylint: disable=W0718
+            _LOGGER.exception(
+                "Error sending %s to %s", command.value, self.vehicle.alias
+            )
+            return
+        code = getattr(status, "code", None)
+        if code is not None and code >= 400:
+            _LOGGER.warning(
+                "%s for %s returned code %s: %s",
+                command.value,
+                self.vehicle.alias,
+                code,
+                getattr(status, "message", None),
+            )

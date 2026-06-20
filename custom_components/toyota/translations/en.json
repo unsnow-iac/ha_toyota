@@ -147,6 +147,9 @@
     "button": {
       "refresh_vehicle_status": {
         "name": "Refresh vehicle status"
+      },
+      "find_vehicle": {
+        "name": "Find vehicle"
       }
     },
     "binary_sensor": {

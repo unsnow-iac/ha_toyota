@@ -27,7 +27,7 @@ from homeassistant.components.lock import LockEntity, LockEntityDescription
 from homeassistant.core import callback
 from pytoyoda.models.endpoints.command import CommandType
 
-from .const import DOMAIN, ICON_CAR_DOOR_LOCK
+from .const import DOMAIN, HTTP_ERROR_THRESHOLD, ICON_CAR_DOOR_LOCK
 from .entity import ToyotaBaseEntity
 
 if TYPE_CHECKING:
@@ -157,7 +157,7 @@ class ToyotaDoorLock(ToyotaBaseEntity, LockEntity):
             _LOGGER.debug("Sending %s to %s", command.value, self.vehicle.alias)
             status = await self.vehicle.post_command(command)
             code = getattr(status, "code", None)
-            if code is not None and code >= 400:
+            if code is not None and code >= HTTP_ERROR_THRESHOLD:
                 _LOGGER.warning(
                     "%s for %s returned code %s: %s",
                     command.value,

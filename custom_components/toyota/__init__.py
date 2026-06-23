@@ -659,7 +659,8 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         except (ToyotaApiError, ToyotaInternalError) as ex:
             _LOGGER.warning(
                 "vehicle.update partial failure for vin=...%s (%s), continuing",
-                (vin or "")[-6:], _error_code(ex),
+                (vin or "")[-6:],
+                _error_code(ex),
             )
         # Build snapshot for the strategy.
         current_odometer_km: float | None = None
@@ -914,8 +915,6 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         # Diag sensors stay visible via their own always_available override.
         any_served = any(
             vd.get("is_cached") or vd.get("last_successful_fetch") is not None
-            for vd in vehicle_informations
-            or vd.get("data") is not None
             for vd in vehicle_informations
         )
         if not any_served:

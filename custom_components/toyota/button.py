@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from pytoyoda.models.endpoints.command import CommandType
 
-from .const import DOMAIN
+from .const import DOMAIN, HTTP_ERROR_THRESHOLD
 from .entity import ToyotaBaseEntity
 
 if TYPE_CHECKING:
@@ -126,13 +126,13 @@ class ToyotaRemoteCommandButton(ToyotaBaseEntity, ButtonEntity):
         try:
             _LOGGER.debug("Sending %s to %s", command.value, self.vehicle.alias)
             status = await self.vehicle.post_command(command)
-        except Exception:  # noqa: BLE001  # pylint: disable=W0718
+        except Exception:  # pylint: disable=W0718
             _LOGGER.exception(
                 "Error sending %s to %s", command.value, self.vehicle.alias
             )
             return
         code = getattr(status, "code", None)
-        if code is not None and code >= 400:
+        if code is not None and code >= HTTP_ERROR_THRESHOLD:
             _LOGGER.warning(
                 "%s for %s returned code %s: %s",
                 command.value,

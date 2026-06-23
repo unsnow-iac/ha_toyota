@@ -10,6 +10,7 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
 ## [Unreleased] — fork divergence from `pytoyoda/ha_toyota` v2.3.0
 
 ### Added
+
 - **Remote door lock entity** — a `lock` entity for the vehicle, with
   `assumed_state` so it stays usable through stale/lagging telemetry between
   refreshes.
@@ -18,6 +19,7 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
   Supersedes an earlier Find-vehicle button.
 
 ### Fixed / Hardened
+
 - **Setup-race resilience** — bound both external fetches in
   `_refresh_one_vehicle` (`STATUS_FETCH_BUDGET_S`, `SUMMARY_FETCH_BUDGET_S`) so a
   Toyota-side outage on the slow `/v1/trips` summary endpoints can no longer
@@ -32,6 +34,10 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
   pydantic `ValidationError`) the integration holds the last-known statistics
   (or `None`) and still returns the cycle's fresh status data, instead of
   stubbing the whole vehicle as unavailable.
+- **Empty-fleet crash fix** — `any_served` had a malformed double-`for`
+  comprehension that raised `NameError` when Toyota returned an empty vehicle
+  list (it survived only because a non-empty list short-circuited the bad
+  iterable). Restored to a single clean comprehension.
 - **Climate-settings HTTP 500 guards** — a `500` on the climate-settings
   endpoint during `vehicle.update` no longer aborts the whole refresh; None-op
   climate operations are guarded and the cycle continues with partial data.

@@ -61,6 +61,10 @@ DEFAULT_POLLING_INTERVAL_MINUTES = 6
 CONF_POST_COUNT_PER_STOP = "post_count_per_stop"
 DEFAULT_POST_COUNT_PER_STOP = 2
 
+# Remote-command result handling. post_command() returns an HTTP-ish status
+# code; >= this threshold (any 4xx/5xx) means the gateway rejected the command.
+HTTP_ERROR_THRESHOLD = 400
+
 # DEFAULTS
 DEFAULT_LOCALE = "en-gb"
 

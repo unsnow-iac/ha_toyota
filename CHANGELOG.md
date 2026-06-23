@@ -57,7 +57,7 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
   `econnect_climate_capable` and `remote_engine_start_stop`, so PHEVs/EVs that
   advertise climate under extended capabilities get the climate entity.
 - **Restored legacy climate detection on top of that** — upstream's `ea73031`
-  *replaced* the `features.climate_start_engine` check with an
+  _replaced_ the `features.climate_start_engine` check with an
   extended-capabilities-only one, which would drop the climate entity for
   ICE/hybrid cars (e.g. the Corolla) that advertise climate via `features` but
   don't set the extended-capability flags. Detection is now additive again

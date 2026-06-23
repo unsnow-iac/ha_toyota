@@ -735,7 +735,7 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
             # Serialised to avoid Toyota burst rate-limit. Firing these four
             # summary calls in an asyncio.gather within the same event-loop
             # tick reliably trips a 429 with {"description": "Unauthorized"}
-            # response bodies. See pytoyoda/ha_toyota#282.
+            # response bodies (observed empirically; serialising avoids it).
             async def _fetch_summaries() -> StatisticsData:
                 return StatisticsData(
                     day=await _call_tagged(

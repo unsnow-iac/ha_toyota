@@ -17,6 +17,6 @@ jobs:
     name: "Hassfest"
     steps:
       - name: "⤵️ Check out code from GitHub"
-        uses: "actions/checkout@v6"
+        uses: "actions/checkout@v7"
       - name: "🏠 Hassfest validation"
         uses: "home-assistant/actions/hassfest@master"

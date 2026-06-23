@@ -48,3 +48,15 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
 - **`TrackerEntity` deprecation** — import from
   `homeassistant.components.device_tracker` directly (the
   `.config_entry` alias is removed in Home Assistant Core 2027.6).
+
+### Synced from upstream
+
+- Merged `pytoyoda/ha_toyota` `main` (post-2026-06-23 revival) into `testing`,
+  picking up the upstream config-dir path fix and broader climate-capability
+  detection — `_vehicle_has_climate_capability` now also accepts
+  `econnect_climate_capable` and `remote_engine_start_stop`, so PHEVs/EVs that
+  advertise climate under extended capabilities get the climate entity.
+- **Did not adopt** upstream's `pytoyoda @ git+…scurkovic/pytoyoda` manifest pin
+  — this fork keeps the published `pytoyoda>=5.1.0,<6.0` requirement so Hassfest
+  stays green. The fork's `validate.yml` also keeps its HACS-publish-job drop
+  (we deploy via `/apply-toyota`, not HACS-default).

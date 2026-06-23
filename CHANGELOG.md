@@ -56,6 +56,13 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
   detection — `_vehicle_has_climate_capability` now also accepts
   `econnect_climate_capable` and `remote_engine_start_stop`, so PHEVs/EVs that
   advertise climate under extended capabilities get the climate entity.
+- **Restored legacy climate detection on top of that** — upstream's `ea73031`
+  *replaced* the `features.climate_start_engine` check with an
+  extended-capabilities-only one, which would drop the climate entity for
+  ICE/hybrid cars (e.g. the Corolla) that advertise climate via `features` but
+  don't set the extended-capability flags. Detection is now additive again
+  (`features` OR `extended_capabilities`), keeping the PHEV/EV gain without the
+  regression. Carried as a clean code-only commit, extractable upstream later.
 - **Did not adopt** upstream's `pytoyoda @ git+…scurkovic/pytoyoda` manifest pin
   — this fork keeps the published `pytoyoda>=5.1.0,<6.0` requirement so Hassfest
   stays green. The fork's `validate.yml` also keeps its HACS-publish-job drop

@@ -63,6 +63,14 @@ async def async_setup_entry(
 def _vehicle_has_climate_capability(vehicle: Vehicle) -> bool:
     """Check if vehicle supports climate control."""
     try:
+        # Standard path (ICE / hybrid, e.g. Corolla): legacy feature flag.
+        if getattr(
+            getattr(vehicle._vehicle_info, "features", False),  # noqa : SLF001
+            "climate_start_engine",
+            False,
+        ):
+            return True
+        # PHEV / EV path: extended capabilities (added upstream in ea73031).
         caps = getattr(vehicle._vehicle_info, "extended_capabilities", False)  # noqa : SLF001
         for cap in [
             "climate_capable",

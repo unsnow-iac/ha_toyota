@@ -2,12 +2,12 @@
 name = "toyota"
 description = "Toyota Connected Services EU community integration for Home Assistant"
 license = "MIT"
-version = "v2.3.0"
+version = "v2.4.0"
 authors = [
   { name = "CM000n", email = "simon.hoerrle@gmail.com" },
   { name = "deejay1", email = "deejay1@srem.org" },
 ]
-requires-python = '>=3.13,<3.14'
+requires-python = '>=3.13.2,<3.15'
 dynamic = ["dependencies"]
 
 [tool.poetry]
@@ -24,7 +24,7 @@ homeassistant-stubs = "^2025.4"
 pre-commit = "^4.1"
 voluptuous-stubs = "^0.1"
 pytest = "^8.3.5"
-pytest-asyncio = "^0.26"
+pytest-asyncio = "^1.0.0"
 pytest-homeassistant-custom-component = "^0.13"
 
 [build-system]

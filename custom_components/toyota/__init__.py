@@ -652,12 +652,13 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         # 429+APIGW-403 from a stale cache that we can avoid entirely by
         # POSTing first OR by serving from cache. Note: vehicle.update() also
         # populates _endpoint_data["telemetry"], which we read for odometer.
-        # A climate-settings 500 (or similar) inside vehicle.update must not
-        # abort the whole refresh - log and continue with partial data. Also
-        # bound the call so a slow/flaky non-status endpoint can't stall
-        # first_refresh past HA's setup budget; on timeout the TimeoutError
-        # propagates to the caller's per-vehicle handler, which serves cache or
-        # a stub (same degrade path as any other transient Toyota failure).
+        # Bounded so a slow/flaky non-status endpoint can't stall first_refresh
+        # past HA's setup budget. On timeout the TimeoutError propagates to the
+        # caller's per-vehicle handler, which serves cache or a stub - same
+        # degrade path as any other transient Toyota failure. A climate-settings
+        # (or other endpoint) HTTP 500 surfaces here as a ToyotaApiError/
+        # ToyotaInternalError - swallow it so a single bad endpoint doesn't fail
+        # the whole refresh; the rest of the snapshot still builds from cache.
         try:
             await asyncio.wait_for(
                 _call_tagged("vehicle.update", vin, vehicle.update(skip=["status"])),
@@ -669,6 +670,7 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
                 (vin or "")[-6:],
                 _error_code(ex),
             )
+
         # Build snapshot for the strategy.
         current_odometer_km: float | None = None
         try:

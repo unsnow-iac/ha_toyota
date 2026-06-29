@@ -82,6 +82,18 @@ STRATEGY_DEFAULT_WAKE_TIMEOUT_S = 25
 STATUS_FETCH_BUDGET_S = 20
 SUMMARY_FETCH_BUDGET_S = 12
 
+# HTTP status codes pytoyoda embeds in a ToyotaApiError message as
+# "Request Failed. <code>, <body>." (controller.request_raw). We surface these
+# as "HTTP <code>" in the log + the last_error_code diagnostic sensor instead of
+# the generic "api error" label, so a throttle/outage is self-evident in triage.
+_CLASSIFIED_HTTP_CODES = ("401", "403", "429", "500", "502", "503", "504")
+# The subset that means "Toyota's API gateway is throttling our session"
+# (intermittent APIGW-403 "Unauthorized" / 429 under request bursts; see
+# ha_toyota#282). Phase B keys adaptive backoff off THIS set only - NOT 401
+# (token/auth, wants reauth not backoff) and NOT 5xx (server-side, pytoyoda
+# already retries those).
+THROTTLE_HTTP_CODES = frozenset({"HTTP 403", "HTTP 429"})
+
 
 def loguru_to_hass(message: str) -> None:
     """Forward Loguru logs to standard Python logger used by HACS."""
@@ -109,6 +121,39 @@ from pytoyoda.exceptions import (  # noqa: E402
     ToyotaInternalError,
     ToyotaLoginError,
 )
+
+# Non-HTTP exception families mapped to a short label for the last_error sensor,
+# checked after the HTTP-code extraction in _error_code. Defined here (not at the
+# top of the module) because it references the pytoyoda exceptions imported above,
+# which are deferred until after Loguru is configured.
+_EXCEPTION_CODE_MAP: list[tuple[tuple[type[BaseException], ...], str]] = [
+    ((httpx.ConnectTimeout, httpcore.ConnectTimeout), "connect timeout"),
+    ((httpx.ReadTimeout, asyncioexceptions.TimeoutError), "read timeout"),
+    ((asyncioexceptions.CancelledError,), "cancelled"),
+    ((ToyotaApiError,), "api error"),
+    ((ToyotaLoginError,), "login error"),
+]
+
+
+def _error_code(exc: BaseException) -> str:
+    """Derive a short error-code string for the last_error sensor.
+
+    pytoyoda embeds the status code in the ToyotaApiError message:
+    "Request Failed. 403, {...}." Extract it when present. Note a 403/429 here is
+    a throttled API *request* (ToyotaApiError); an auth-endpoint 401/403 is a
+    ToyotaLoginError with a different "Authentication Failed." message that
+    intentionally does NOT match here and falls through to the "login error"
+    label below.
+    """
+    msg = str(exc)
+    for code in _CLASSIFIED_HTTP_CODES:
+        if f"Request Failed. {code}," in msg:
+            return f"HTTP {code}"
+    for exc_types, label in _EXCEPTION_CODE_MAP:
+        if isinstance(exc, exc_types):
+            return label
+    return type(exc).__name__
+
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -286,27 +331,6 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
     last_error_per_vin: dict[str, tuple[datetime, str]] = diag_bucket[
         "last_error_per_vin"
     ]
-
-    exception_code_map: list[tuple[tuple[type[BaseException], ...], str]] = [
-        ((httpx.ConnectTimeout, httpcore.ConnectTimeout), "connect timeout"),
-        ((httpx.ReadTimeout, asyncioexceptions.TimeoutError), "read timeout"),
-        ((asyncioexceptions.CancelledError,), "cancelled"),
-        ((ToyotaApiError,), "api error"),
-        ((ToyotaLoginError,), "login error"),
-    ]
-
-    def _error_code(exc: BaseException) -> str:
-        """Derive a short error-code string for the last_error sensor."""
-        msg = str(exc)
-        # Toyota 429s embed the status code in the ToyotaApiError message:
-        # "Request Failed. 429, {...}." Extract it when present.
-        for code in ("429", "500", "502", "503", "504"):
-            if f"Request Failed. {code}," in msg:
-                return f"HTTP {code}"
-        for exc_types, label in exception_code_map:
-            if isinstance(exc, exc_types):
-                return label
-        return type(exc).__name__
 
     def _build_vehicle_data_from_cache(vin: str) -> VehicleData:
         """Return a copy of the last-good VehicleData for a vin.

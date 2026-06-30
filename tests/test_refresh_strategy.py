@@ -25,6 +25,7 @@ from custom_components.toyota.refresh_strategy import (
     on_post_layer1_failure,
     on_post_layer1_success,
     on_wake_failed,
+    throttle_excluded_from_layer1,
 )
 
 
@@ -295,6 +296,23 @@ def test_layer1_success_resets_rejection_counter():
     state = VinState(consecutive_post_rejections=1)
     on_post_layer1_success(state)
     assert state.consecutive_post_rejections == 0
+
+
+def test_throttle_excluded_from_layer1_for_throttle_codes():
+    # A transient throttle (403/429) on the POST must not count toward
+    # auto-disable - the gateway is rate-limiting us, not rejecting the car.
+    assert throttle_excluded_from_layer1("HTTP 403") is True
+    assert throttle_excluded_from_layer1("HTTP 429") is True
+
+
+def test_throttle_not_excluded_for_genuine_rejections():
+    # None = 200 with a non-000000 returnCode (a real capability rejection);
+    # 404/501 = persistent gateway errors; a read timeout = transient-but-not
+    # a throttle. All must still count toward auto-disable.
+    assert throttle_excluded_from_layer1(None) is False
+    assert throttle_excluded_from_layer1("HTTP 404") is False
+    assert throttle_excluded_from_layer1("HTTP 401") is False
+    assert throttle_excluded_from_layer1("read timeout") is False
 
 
 def test_wake_failed_triggers_soft_disable_at_threshold():

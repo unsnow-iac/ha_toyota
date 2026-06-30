@@ -7,8 +7,9 @@ things:
 1. HTTP status codes pytoyoda embeds as "Request Failed. <code>, <body>." are
    surfaced as "HTTP <code>" (incl. 403/401, which used to fall through to the
    generic "api error" label and masked the 2026-06-28 rate-limit incident).
-2. `THROTTLE_HTTP_CODES` — the subset Phase B keys adaptive backoff off — is
-   exactly {403, 429}: a throttle, NOT 401 (auth) and NOT 5xx (server-side).
+2. `THROTTLE_HTTP_CODES` — the subset the throttle-aware Layer-1 check excludes
+   from auto-disable accounting — is exactly {403, 429}: a throttle, NOT 401
+   (auth) and NOT 5xx (server-side).
 """
 
 from __future__ import annotations
@@ -18,10 +19,8 @@ import asyncio
 import httpx
 import pytest
 
-from custom_components.toyota import (
-    THROTTLE_HTTP_CODES,
-    _error_code,
-)
+from custom_components.toyota import _error_code
+from custom_components.toyota.refresh_strategy import THROTTLE_HTTP_CODES
 from pytoyoda.exceptions import ToyotaApiError, ToyotaLoginError
 
 
@@ -69,8 +68,8 @@ def test_login_error_is_not_misread_as_http() -> None:
     """An auth-endpoint 401/403 is a ToyotaLoginError with a different message.
 
     Its "Authentication Failed. 401," text must NOT match the "Request Failed."
-    extractor — it falls through to the 'login error' label, so Phase B never
-    backs off on what is actually a reauth condition.
+    extractor — it falls through to the 'login error' label, so the throttle
+    check never misreads what is actually a reauth condition.
     """
     err = ToyotaLoginError("Authentication Failed. 401, denied.")
     assert _error_code(err) == "login error"
@@ -89,10 +88,10 @@ def test_unknown_exception_returns_type_name() -> None:
 
 
 def test_throttle_set_is_exactly_403_and_429() -> None:
-    """Phase B's backoff trigger set: throttle codes only, not auth/server."""
+    """The Layer-1 throttle-exclusion set: throttle codes only, not auth/server."""
     assert THROTTLE_HTTP_CODES == frozenset({"HTTP 403", "HTTP 429"})
     assert _error_code(_api_error("403")) in THROTTLE_HTTP_CODES
     assert _error_code(_api_error("429")) in THROTTLE_HTTP_CODES
-    # Not throttles: must NOT trigger backoff.
+    # Not throttles: must still count toward auto-disable.
     assert _error_code(_api_error("401")) not in THROTTLE_HTTP_CODES
     assert _error_code(_api_error("500")) not in THROTTLE_HTTP_CODES

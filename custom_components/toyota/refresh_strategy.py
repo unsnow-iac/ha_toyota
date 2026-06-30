@@ -56,6 +56,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+# The "HTTP <code>" labels (as emitted by _error_code) that mean "Toyota's API
+# gateway is throttling our session" (intermittent APIGW-403 "Unauthorized" /
+# 429 under request bursts; see ha_toyota#282). throttle_excluded_from_layer1
+# uses this to keep a transient throttle on the refresh-status POST from being
+# counted as a capability rejection. NOT 401 (token/auth, wants reauth) and NOT
+# 5xx (server-side, pytoyoda already retries). Lives here (next to its sole
+# consumer) to keep this module pure-stdlib / importable without homeassistant.
+THROTTLE_HTTP_CODES = frozenset({"HTTP 403", "HTTP 429"})
+
 # Number of consecutive Layer 1 (gateway-rejected) wake POSTs that auto-disables
 # refresh-status for the entire config entry. Per remediation-plan Addendum 4.
 _AUTO_DISABLE_REJECTION_THRESHOLD = 2
@@ -341,6 +350,19 @@ def decide(snapshot: CycleSnapshot) -> RefreshDecision:
 # observing the outcome. Keeping them in this module so the strategy and its
 # state-machine bookkeeping live together.
 # ----------------------------------------------------------------------------
+
+
+def throttle_excluded_from_layer1(post_error_code: str | None) -> bool:
+    """Return True if a POST failure is a throttle, not a capability rejection.
+
+    A throttle (403/429) is transient and must NOT advance
+    consecutive_post_rejections or trigger auto-disable - that is reserved for a
+    genuine gateway rejection ("this car does not support refresh-status"). The
+    caller passes _error_code()'s "HTTP <code>" label for the suppressed POST
+    exception, or None when the POST returned 200 with a non-000000 returnCode
+    (a real rejection, which still counts).
+    """
+    return post_error_code in THROTTLE_HTTP_CODES
 
 
 def on_post_layer1_failure(state: VinState, _options: StrategyOptions) -> bool:

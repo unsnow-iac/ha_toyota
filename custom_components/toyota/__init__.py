@@ -57,6 +57,7 @@ from .refresh_strategy import (
     on_post_layer1_failure,
     on_post_layer1_success,
     on_wake_failed,
+    throttle_excluded_from_layer1,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,13 +87,9 @@ SUMMARY_FETCH_BUDGET_S = 12
 # "Request Failed. <code>, <body>." (controller.request_raw). We surface these
 # as "HTTP <code>" in the log + the last_error_code diagnostic sensor instead of
 # the generic "api error" label, so a throttle/outage is self-evident in triage.
+# The throttle subset (THROTTLE_HTTP_CODES) lives in refresh_strategy.py,
+# next to throttle_excluded_from_layer1 which is its only consumer.
 _CLASSIFIED_HTTP_CODES = ("401", "403", "429", "500", "502", "503", "504")
-# The subset that means "Toyota's API gateway is throttling our session"
-# (intermittent APIGW-403 "Unauthorized" / 429 under request bursts; see
-# ha_toyota#282). Phase B keys adaptive backoff off THIS set only - NOT 401
-# (token/auth, wants reauth not backoff) and NOT 5xx (server-side, pytoyoda
-# already retries those).
-THROTTLE_HTTP_CODES = frozenset({"HTTP 403", "HTTP 429"})
 
 
 def loguru_to_hass(message: str) -> None:
@@ -452,16 +449,24 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         # ("gateway will not process this POST"). _call_tagged has already
         # logged the underlying error.
         post_response = None
-        with contextlib.suppress(
+        # Capture the suppressed error so the Layer 1 branch can tell a
+        # transient throttle (403/429) apart from a genuine gateway rejection.
+        # A throttle must not be counted toward auto-disable (see
+        # throttle_excluded_from_layer1). None = POST raised nothing / returned
+        # 200 with a non-000000 returnCode = a real rejection that still counts.
+        post_error_code: str | None = None
+        try:
+            post_response = await _call_tagged(
+                "refresh_status", vin, vehicle.refresh_status()
+            )
+        except (
             ToyotaApiError,
             httpx.ConnectTimeout,
             httpcore.ConnectTimeout,
             asyncioexceptions.TimeoutError,
             httpx.ReadTimeout,
-        ):
-            post_response = await _call_tagged(
-                "refresh_status", vin, vehicle.refresh_status()
-            )
+        ) as ex:
+            post_error_code = _error_code(ex)
         state.last_post_attempt_at = dt_util.now()
 
         # Layer 1: gateway-level acceptance. payload.return_code "000000" =
@@ -471,35 +476,50 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         return_code = getattr(payload, "return_code", None) if payload else None
 
         if return_code != "000000":
-            should_auto_disable = on_post_layer1_failure(state, opts)
-            if post_response is not None:
-                # 200 OK with non-000000 returnCode (gateway-level rejection).
+            if throttle_excluded_from_layer1(post_error_code):
+                # A transient throttle (403/429), not a capability rejection -
+                # do NOT advance the rejection counter or auto-disable. Still
+                # fall through to the bare GET below so /status entities refresh
+                # this cycle, and recover cleanly on the first non-throttled
+                # POST. Prevents the flap active<->hard_disabled_auto during a
+                # Toyota-side throttle storm (and the stuck-after-recovery trap
+                # when a parked car wouldn't POST again to clear the flag).
                 _LOGGER.warning(
-                    "Toyota refresh-status rejected for vin=...%s (returnCode=%s)",
+                    "Toyota refresh-status throttled for vin=...%s (%s); not "
+                    "counting toward auto-disable",
                     vin[-6:],
-                    return_code,
+                    post_error_code,
                 )
-            if should_auto_disable and not entry.options.get(
-                CONF_AUTO_DISABLED_STATUS_REFRESH, False
-            ):
-                # Persist auto-disable to config_entry.options. Triggers a
-                # listener-driven reload, which is fine - state survives
-                # via diag_bucket. Guarded against re-entrance: a service-
-                # call retry that still 500s would otherwise trip the
-                # threshold every cycle and trigger a redundant reload.
-                hass.config_entries.async_update_entry(
-                    entry,
-                    options={
-                        **entry.options,
-                        CONF_AUTO_DISABLED_STATUS_REFRESH: True,
-                    },
-                )
-                _LOGGER.warning(
-                    "Toyota auto-disabled smart refresh for vin=...%s "
-                    "after %d consecutive Layer 1 rejections",
-                    vin[-6:],
-                    state.consecutive_post_rejections,
-                )
+            else:
+                should_auto_disable = on_post_layer1_failure(state, opts)
+                if post_response is not None:
+                    # 200 OK with non-000000 returnCode (gateway-level rejection).
+                    _LOGGER.warning(
+                        "Toyota refresh-status rejected for vin=...%s (returnCode=%s)",
+                        vin[-6:],
+                        return_code,
+                    )
+                if should_auto_disable and not entry.options.get(
+                    CONF_AUTO_DISABLED_STATUS_REFRESH, False
+                ):
+                    # Persist auto-disable to config_entry.options. Triggers a
+                    # listener-driven reload, which is fine - state survives
+                    # via diag_bucket. Guarded against re-entrance: a service-
+                    # call retry that still 500s would otherwise trip the
+                    # threshold every cycle and trigger a redundant reload.
+                    hass.config_entries.async_update_entry(
+                        entry,
+                        options={
+                            **entry.options,
+                            CONF_AUTO_DISABLED_STATUS_REFRESH: True,
+                        },
+                    )
+                    _LOGGER.warning(
+                        "Toyota auto-disabled smart refresh for vin=...%s "
+                        "after %d consecutive Layer 1 rejections",
+                        vin[-6:],
+                        state.consecutive_post_rejections,
+                    )
             # Fall back to a bare GET so /status entities still refresh
             # this cycle (matches the HARD_DISABLED legacy path). Useful
             # for cycles before auto-disable kicks in, and for any vehicle

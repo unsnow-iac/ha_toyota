@@ -45,6 +45,18 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
   with a bare-`GET /status` fallback and auto-recovery that clears the
   auto-disable flag once the gateway processes a POST again; a manual
   `refresh_vehicle_status` call bypasses the hard-disabled-auto state.
+- **HTTP error-code visibility** — the `last_error_code` diagnostic sensor and
+  the warning logs now classify HTTP `401`/`403`/`429` (alongside `5xx`)
+  embedded in Toyota API errors, so a throttle/auth/outage shows as `HTTP 403`
+  etc. instead of a generic "api error" label — making the cause self-evident
+  in triage.
+- **Throttle-aware auto-disable** — a transient throttle (HTTP `403`/`429`) on
+  the refresh-status POST no longer counts toward the Layer-1 auto-disable
+  threshold. Previously a Toyota-side 403 storm was miscounted as the vehicle
+  *rejecting* refresh-status, auto-disabling smart refresh and flapping
+  `status_refresh_state` `active`↔`hard_disabled_auto` (and could leave it stuck
+  disabled on a parked car until the next drive). Genuine rejections (`200` with
+  a non-`000000` returnCode, `404`/`501`, timeouts) still count as before.
 - **`TrackerEntity` deprecation** — import from
   `homeassistant.components.device_tracker` directly (the
   `.config_entry` alias is removed in Home Assistant Core 2027.6).

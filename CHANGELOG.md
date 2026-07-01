@@ -53,7 +53,7 @@ Entries below are the changes this fork carries **on top of upstream `v2.3.0`**
 - **Throttle-aware auto-disable** — a transient throttle (HTTP `403`/`429`) on
   the refresh-status POST no longer counts toward the Layer-1 auto-disable
   threshold. Previously a Toyota-side 403 storm was miscounted as the vehicle
-  *rejecting* refresh-status, auto-disabling smart refresh and flapping
+  _rejecting_ refresh-status, auto-disabling smart refresh and flapping
   `status_refresh_state` `active`↔`hard_disabled_auto` (and could leave it stuck
   disabled on a parked car until the next drive). Genuine rejections (`200` with
   a non-`000000` returnCode, `404`/`501`, timeouts) still count as before.

@@ -7,6 +7,9 @@
   "documentation": "https://github.com/pytoyoda/ha_toyota",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/pytoyoda/ha_toyota/issues",
-  "requirements": ["pytoyoda @ file:///config/toyota-dev/wheels/pytoyoda-5.1.0.post7.dev0+c02e8ba-py3-none-any.whl", "arrow"],
+  "requirements": [
+    "pytoyoda @ file:///config/toyota-dev/wheels/pytoyoda-5.1.0.post7.dev0+c02e8ba-py3-none-any.whl",
+    "arrow"
+  ],
   "version": "v2.4.0"
 }

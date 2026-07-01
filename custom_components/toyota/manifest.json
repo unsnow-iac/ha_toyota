@@ -8,5 +8,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/pytoyoda/ha_toyota/issues",
   "requirements": ["pytoyoda @ file:///config/toyota-dev/wheels/pytoyoda-5.1.0.post3.dev0+4f80ee2-py3-none-any.whl", "arrow"],
-  "version": "v2.5.0"
+  "version": "v2.4.0"
 }

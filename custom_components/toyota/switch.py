@@ -51,9 +51,11 @@ class ToyotaSteeringHeaterSwitch(ToyotaBaseEntity, SwitchEntity):
     """Writable steering-wheel heater.
 
     A thin control over ``ToyotaClimate``: the climate entity owns the
-    climate-control request, so this delegates set/actuate to it and reads the
-    desired state back. Applied live if a session is running, otherwise stored for
-    the next start (never starts the engine from off).
+    climate-control request, so this records the desired value there and reads it
+    back. Store-only — applied on the next climate START (never actuates on its own
+    and never starts the engine). Note the wheel only physically heats while the
+    climate is HEATING (a low target temp = cooling suppresses it), and the car
+    exposes no read-back, so this switch is an optimistic desired-state control.
     """
 
     def _climate(self) -> ToyotaClimate | None:

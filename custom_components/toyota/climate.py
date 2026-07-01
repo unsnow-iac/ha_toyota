@@ -450,8 +450,9 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             _LOGGER.debug("Climate start rejected: %s", response)
             raise HomeAssistantError(
                 "Toyota did not start the climate. Common causes: the car is "
-                "unlocked, a door/window/trunk is open, a key is inside, or "
-                "climate was already started once since the last ignition."
+                "unlocked, a door/window/trunk is open, or a key is inside. "
+                "(Re-issuing a start while climate is already running is also "
+                "rejected.)"
             )
 
     async def _turn_on_climate(self) -> None:
@@ -481,32 +482,18 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             _LOGGER.debug("Post-start status poll failed (non-fatal)", exc_info=True)
 
     async def async_set_steering_heater(self, on: bool) -> None:
-        """Set the desired steering-heater state (fed by the Tier-B switch).
+        """Record the desired steering-heater state (fed by the Tier-B switch).
 
-        Live-update semantics: if a climate session is running, re-issue a
-        ``start`` so the change takes effect now; if climate is off, just record
-        the desired value for the next manual start — never start the engine from
-        an off state.
+        Store-only: the value is applied on the next climate START (the V2 start
+        sends the full desired body). We deliberately do NOT re-issue a start
+        mid-session — on this car a start-while-running is REJECTED by Toyota (it
+        returns ``000000`` but pushes a "climate start error" notification and does
+        not take effect; observed live 2026-07-01). And the wheel/seat heaters only
+        physically engage while the climate is HEATING — a low target temp (cooling)
+        suppresses them — so a live update on a cooling session wouldn't heat anyway.
+        Store-only keeps it safe and notification-spam-free.
         """
-        previous = self._steering_override
         self._steering_override = "on" if on else "off"
-
-        if self._attr_climate_status:
-            _LOGGER.debug("Live-updating steering heater for %s", self.vehicle.alias)
-            try:
-                await self._send_start()
-            except Exception:  # pylint: disable=W0718
-                self._steering_override = previous  # revert on failure
-                self.async_write_ha_state()
-                raise
-            try:
-                await self._poll_status()
-            except Exception:  # pylint: disable=W0718
-                _LOGGER.debug(
-                    "Post-steering-update status poll failed (non-fatal)",
-                    exc_info=True,
-                )
-
         self.async_write_ha_state()
 
     @property

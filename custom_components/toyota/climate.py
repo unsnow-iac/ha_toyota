@@ -20,7 +20,7 @@ from pytoyoda.models.endpoints.climate import (
     ACOperations,
     ACParameters,
     ClimateControlModel,
-    ClimateSettingsModel,
+    ClimateSettingsRequestModel,
 )
 
 if TYPE_CHECKING:
@@ -38,6 +38,12 @@ SCAN_INTERVAL = timedelta(seconds=120)
 
 # Debounce delay for API calls (in seconds)
 SETTINGS_DEBOUNCE_DELAY = 5.0
+
+# The /v1/vehicle/climate-settings payload no longer carries min/max/step; mirror
+# the MyToyota app's fixed 18-29 degree range with a 1-degree step.
+DEFAULT_MIN_TEMP = 18
+DEFAULT_MAX_TEMP = 29
+DEFAULT_TEMP_STEP = 1
 
 
 async def async_setup_entry(
@@ -153,38 +159,92 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             _LOGGER.exception("Error loading climate settings from coordinator")
 
     def _load_temperature_settings(self) -> None:
-        """Load temperature settings from climate_settings."""
+        """Load target temperature + unit from climate_settings."""
         climate_settings = self.vehicle.climate_settings
         target_temperature = climate_settings.temperature
         if target_temperature is not None and target_temperature.value is not None:
             self._attr_target_temperature = target_temperature.value
-        # `or <default>` guards against the attribute existing but being None
-        # (climate-settings HTTP 500). A None min/max_temp makes HA core's
-        # set_temperature validation do `float < None` -> TypeError; keep the
-        # __init__ defaults (18/29/1) instead.
-        self._attr_min_temp = getattr(climate_settings, "min_temp", None) or 18
-        self._attr_max_temp = getattr(climate_settings, "max_temp", None) or 29
-        self._attr_target_temperature_step = (
-            getattr(climate_settings, "temp_interval", None) or 1
-        )
+            # Honor the unit the car reports rather than assuming Celsius.
+            unit = (target_temperature.unit or "").upper()
+            self._attr_temperature_unit = (
+                UnitOfTemperature.FAHRENHEIT
+                if unit.startswith("F")
+                else UnitOfTemperature.CELSIUS
+            )
+        # The new climate-settings payload no longer carries min/max/step; use the
+        # app's fixed bounds (a None min/max would make HA core's set_temperature
+        # validation do `float < None` -> TypeError).
+        self._attr_min_temp = DEFAULT_MIN_TEMP
+        self._attr_max_temp = DEFAULT_MAX_TEMP
+        self._attr_target_temperature_step = DEFAULT_TEMP_STEP
 
     def _load_defrost_settings(self) -> None:
-        """Load defrost settings from climate_settings operations."""
-        climate_settings = self.vehicle.climate_settings
-        # API can return operations=None (e.g. climate-settings HTTP 500);
-        # `or []` guards against the attribute existing but being None.
-        operations = getattr(climate_settings, "operations", None) or []
-        for operation in filter(lambda o: o.category_name == "defrost", operations):
-            for param in operation.parameters:
-                if param.name == "frontDefrost":
-                    self._attr_front_defrost = param.enabled
-                elif param.name == "rearDefrost":
-                    self._attr_rear_defrost = param.enabled
+        """Load defrost/defogger state from climate_settings heating options."""
+        # Migrated 2026-07: defrost state moved from the old acOperations list to
+        # the new heatingOptions map. heating_options can be None (climate-settings
+        # 403/500), so guard before reading.
+        heating = getattr(self.vehicle.climate_settings, "heating_options", None)
+        if heating is None:
+            return
+        if heating.front_defroster is not None:
+            self._attr_front_defrost = heating.front_defroster
+        if heating.rear_defogger is not None:
+            self._attr_rear_defrost = heating.rear_defogger
+
+    def _load_climate_status_from_coordinator(self) -> None:
+        """Reflect the car's live climate state (on/off + cabin temp) if available.
+
+        The coordinator fetches climate_status each cycle; reading it here keeps the
+        entity truthful even when climate is started/stopped from the Toyota app.
+        """
+        try:
+            climate_status = getattr(self.vehicle, "climate_status", None)
+            if climate_status is None:
+                return
+            is_on = climate_status.is_on
+            if is_on is not None:
+                self._attr_climate_status = is_on
+                self._attr_hvac_mode = (
+                    HVACMode.HEAT_COOL if is_on else HVACMode.OFF
+                )
+            current = climate_status.current_temperature
+            self._attr_current_temperature = (
+                current.value if current is not None else None
+            )
+        except Exception:  # pylint: disable=W0718
+            _LOGGER.exception("Error loading climate status from coordinator")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Surface the new climate capabilities (read-only until the V2 PR).
+
+        Seat heaters are multi-level (off/low/medium/high); steering heater and the
+        defroster/defogger are on/off. These are not yet writable entities.
+        """
+        settings = getattr(self.vehicle, "climate_settings", None)
+        if settings is None:
+            return None
+        heating = settings.heating_options
+        seats = settings.seat_options
+        attrs: dict[str, Any] = {}
+        if heating is not None:
+            attrs["steering_heater"] = heating.steering_heater
+        if seats is not None:
+            attrs["seat_heater_driver"] = seats.driver_seat
+            attrs["seat_heater_passenger"] = seats.passenger_seat
+            attrs["seat_heater_rear_driver"] = seats.rear_driver_seat
+            attrs["seat_heater_rear_passenger"] = seats.rear_passenger_seat
+        if settings.duration is not None:
+            attrs["duration_minutes"] = int(
+                settings.duration.total_seconds() // 60
+            )
+        return attrs or None
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self._load_climate_settings_from_coordinator()
+        self._load_climate_status_from_coordinator()
         super()._handle_coordinator_update()
 
     @property
@@ -233,32 +293,31 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             return "rear_defrost"
         return "none"
 
-    def _create_climate_settings(self) -> ClimateSettingsModel:
-        """Create a ClimateSettingsModel with current defrost settings.
+    def _create_climate_settings(self) -> ClimateSettingsRequestModel:
+        """Build the legacy climate-settings write body.
+
+        NOTE (2026-07): this legacy PUT body targets the retired
+        /v1/global/remote/climate-settings route and is superseded by the unified
+        POST /v2/remote/climate-control request. It is kept so the control path
+        type-checks; actuation correctness lands with the V2 migration PR.
 
         Returns:
-            ClimateSettingsModel configured with the specified settings
+            ClimateSettingsRequestModel configured with the specified settings
         """
-        # Start with existing operations. climate_settings itself (not just
-        # .operations) can be None when the climate-settings endpoint 500'd, so
-        # getattr through both to avoid an AttributeError on the control path.
-        climate_settings = getattr(self.vehicle, "climate_settings", None)
-        ac_operations = (getattr(climate_settings, "operations", None) or []).copy()
+        # operations() is a deprecated back-compat accessor and now returns []
+        # (the new read payload has no acOperations); rebuild the defrost operation
+        # from the current entity state.
+        ac_operations = [
+            ACOperations(
+                categoryName="defrost",
+                acParameters=[
+                    ACParameters(enabled=self.front_defrost, name="frontDefrost"),
+                    ACParameters(enabled=self.rear_defrost, name="rearDefrost"),
+                ],
+            )
+        ]
 
-        # Find and replace the defrost operation
-        for i, operation in enumerate(ac_operations):
-            if operation.category_name == "defrost":
-                # Create new defrost operation with current values
-                ac_operations[i] = ACOperations(
-                    categoryName="defrost",
-                    acParameters=[
-                        ACParameters(enabled=self.front_defrost, name="frontDefrost"),
-                        ACParameters(enabled=self.rear_defrost, name="rearDefrost"),
-                    ],
-                )
-                break
-
-        return ClimateSettingsModel(
+        return ClimateSettingsRequestModel(
             settingsOn=self.climate_settings_on,
             temperature=self.target_temperature,
             temperatureUnit="C",
@@ -289,36 +348,21 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             _LOGGER.exception("Error setting preset mode")
 
     async def async_update(self) -> None:
-        """Update climate settings from the car."""
+        """Poll the car for fresh climate status."""
         if not self.climate_settings_on:
             return
 
         try:
+            # Wake the car, then refetch just climate_status (the envelope-unwrap
+            # bug in vehicle.climate_status is fixed upstream, so no _api bypass).
             if await self.vehicle.refresh_climate_status():
                 _LOGGER.debug("Climate status refreshed from car")
-                # vehicle.climate_status does not seem to work for some reason
-                response = await self.vehicle._api.get_climate_status(  # noqa: SLF001
-                    self.vehicle.vin
-                )
-                _LOGGER.debug("Climate status fetched %s", response)
-                climate_status = response.payload
-                if climate_status.status:
-                    _LOGGER.debug("Climate is on, sync current temperature")
-                    # car has started heating
-                    self._attr_climate_status = True
-                    self._attr_current_temperature = (
-                        climate_status.current_temperature.value
-                    )
-
-                elif self._attr_climate_status:
-                    _LOGGER.debug("Climate is now off")
-                    # turn off the climate device
-                    self._attr_hvac_mode = HVACMode.OFF
-                    self._attr_current_temperature = None
-                    # reset the climate status flag
-                    self._attr_climate_status = False
-
+                await self.vehicle.update(only=["climate_status"])
+                self._load_climate_status_from_coordinator()
                 self.async_write_ha_state()
+
+        except Exception:  # pylint: disable=W0718
+            _LOGGER.exception("Error updating climate status")
 
         except Exception:  # pylint: disable=W0718
             _LOGGER.exception("Error updating climate settings")

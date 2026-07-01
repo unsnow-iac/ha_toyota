@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
-    from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,7 +41,9 @@ async def async_setup_entry(
         # cannot be trusted to detect presence.
         if _vehicle_has_climate_capability(vehicle_data["data"]):
             entities.append(
-                ToyotaSteeringHeaterSwitch(coordinator, entry.entry_id, index, description)
+                ToyotaSteeringHeaterSwitch(
+                    coordinator, entry.entry_id, index, description
+                )
             )
     async_add_entities(entities)
 
@@ -76,18 +77,19 @@ class ToyotaSteeringHeaterSwitch(ToyotaBaseEntity, SwitchEntity):
             return None
         return desired == "on"
 
-    async def async_turn_on(self, **kwargs: Any) -> None:  # noqa: ANN401
+    # kwargs is required by the SwitchEntity.async_turn_on/off contract but unused.
+    async def async_turn_on(self, **kwargs: Any) -> None:  # noqa: ANN401, ARG002
         """Turn the steering heater on."""
-        await self._set(True)
+        await self._set(on=True)
 
-    async def async_turn_off(self, **kwargs: Any) -> None:  # noqa: ANN401
+    async def async_turn_off(self, **kwargs: Any) -> None:  # noqa: ANN401, ARG002
         """Turn the steering heater off."""
-        await self._set(False)
+        await self._set(on=False)
 
-    async def _set(self, on: bool) -> None:
+    async def _set(self, *, on: bool) -> None:
         climate = self._climate()
         if climate is None:
             _LOGGER.debug("Climate entity not available; cannot set steering heater")
             return
-        await climate.async_set_steering_heater(on)
+        await climate.async_set_steering_heater(on=on)
         self.async_write_ha_state()

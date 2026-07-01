@@ -204,9 +204,7 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             is_on = climate_status.is_on
             if is_on is not None:
                 self._attr_climate_status = is_on
-                self._attr_hvac_mode = (
-                    HVACMode.HEAT_COOL if is_on else HVACMode.OFF
-                )
+                self._attr_hvac_mode = HVACMode.HEAT_COOL if is_on else HVACMode.OFF
             current = climate_status.current_temperature
             self._attr_current_temperature = (
                 current.value if current is not None else None
@@ -235,9 +233,7 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             attrs["seat_heater_rear_driver"] = seats.rear_driver_seat
             attrs["seat_heater_rear_passenger"] = seats.rear_passenger_seat
         if settings.duration is not None:
-            attrs["duration_minutes"] = int(
-                settings.duration.total_seconds() // 60
-            )
+            attrs["duration_minutes"] = int(settings.duration.total_seconds() // 60)
         return attrs or None
 
     @callback
@@ -321,12 +317,12 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
         read_heating = getattr(settings, "heating_options", None)
         read_seats = getattr(settings, "seat_options", None)
 
-        def _wire(flag: bool | None) -> str | None:
+        def _wire(*, flag: bool | None) -> str | None:
             return None if flag is None else ("on" if flag else "off")
 
         heating = HeatingOptionsModel(
-            front_defroster=_wire(self.front_defrost),
-            rear_defogger=_wire(self.rear_defrost),
+            front_defroster=_wire(flag=self.front_defrost),
+            rear_defogger=_wire(flag=self.rear_defrost),
             # Steering: writable override (Tier-B switch) if set, else echo the car's
             # current value. The read is ALREADY an "on"/"off" string, so pass it
             # through raw — do NOT _wire() it (that turned "off" into "on", silently
@@ -347,9 +343,7 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             )
 
         unit = (
-            "F"
-            if self._attr_temperature_unit == UnitOfTemperature.FAHRENHEIT
-            else "C"
+            "F" if self._attr_temperature_unit == UnitOfTemperature.FAHRENHEIT else "C"
         )
         # Only persist defaults when we have a full read to echo — a null-options
         # body with save_settings=True could clear the car's saved seat/steering.
@@ -448,12 +442,13 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
         )
         if not self._command_ok(response):
             _LOGGER.debug("Climate start rejected: %s", response)
-            raise HomeAssistantError(
+            msg = (
                 "Toyota did not start the climate. Common causes: the car is "
                 "unlocked, a door/window/trunk is open, or a key is inside. "
                 "(Re-issuing a start while climate is already running is also "
                 "rejected.)"
             )
+            raise HomeAssistantError(msg)
 
     async def _turn_on_climate(self) -> None:
         """Turn on climate via a single V2 ``start`` command."""
@@ -470,18 +465,17 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             self.async_write_ha_state()
             if isinstance(err, HomeAssistantError):
                 raise
-            raise HomeAssistantError(
-                f"Failed to turn on Toyota climate: {err}"
-            ) from err
+            msg = f"Failed to turn on Toyota climate: {err}"
+            raise HomeAssistantError(msg) from err
 
         _LOGGER.debug("Climate control turned on for %s", self.vehicle.alias)
         # Confirm the actual state (stopped -> starting/running) best-effort.
         try:
             await self._poll_status()
-        except Exception:  # pylint: disable=W0718
+        except Exception:  # noqa: BLE001  # best-effort poll; any failure is non-fatal
             _LOGGER.debug("Post-start status poll failed (non-fatal)", exc_info=True)
 
-    async def async_set_steering_heater(self, on: bool) -> None:
+    async def async_set_steering_heater(self, *, on: bool) -> None:
         """Record the desired steering-heater state (fed by the Tier-B switch).
 
         Store-only: the value is applied on the next climate START (the V2 start
@@ -525,9 +519,8 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             # The stop may not have landed — revert to "on" rather than falsely off.
             self._attr_hvac_mode = HVACMode.HEAT_COOL
             self.async_write_ha_state()
-            raise HomeAssistantError(
-                f"Failed to turn off Toyota climate: {err}"
-            ) from err
+            msg = f"Failed to turn off Toyota climate: {err}"
+            raise HomeAssistantError(msg) from err
 
         # A non-000000 on stop is usually benign ("already stopped"); don't error the
         # tile — the next coordinator poll reconciles the real state via is_on.

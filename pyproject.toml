@@ -40,6 +40,8 @@ asyncio_default_fixture_loop_scope = "function"
 fix = true
 extend-exclude = ["tests"]
 lint.select = ["ALL"]
-lint.extend-ignore = ["D203", "D213", "COM812"]
+# TRY003: raising HomeAssistantError with a user-facing message is the HA idiom;
+# subclassing an exception per message (the rule's "fix") is inappropriate here.
+lint.extend-ignore = ["D203", "D213", "COM812", "TRY003"]
 lint.pydocstyle.convention = "google"
 format.docstring-code-format = true

@@ -418,7 +418,7 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
             post_count_per_stop=post_count_per_stop,
         )
 
-    async def _execute_post_then_get(
+    async def _execute_post_then_get(  # noqa: C901
         vehicle: Vehicle,
         vin: str,
         state: VinState,

@@ -15,13 +15,12 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityDescription
-from homeassistant.helpers.event import async_call_later
 from pytoyoda.models.endpoints.climate import (
-    ACOperations,
-    ACParameters,
-    ClimateControlModel,
-    ClimateSettingsRequestModel,
+    HeatingOptionsModel,
+    SeatOptionsModel,
+    V2RemoteClimateControlRequestModel,
 )
+from pytoyoda.models.endpoints.common import UnitValueModel
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -36,8 +35,8 @@ from .entity import ToyotaBaseEntity
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=120)
 
-# Debounce delay for API calls (in seconds)
-SETTINGS_DEBOUNCE_DELAY = 5.0
+# Command success code in the V2 climate-control response payload.
+CLIMATE_COMMAND_OK = "000000"
 
 # The /v1/vehicle/climate-settings payload no longer carries min/max/step; mirror
 # the MyToyota app's fixed 18-29 degree range with a 1-degree step.
@@ -127,10 +126,6 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
         self._attr_rear_defrost = False
         self._attr_current_temperature = None
         self._attr_climate_status = False
-
-        # Debouncing state - using HA's task cancellation
-        self._pending_settings_cancel = None
-        self._settings_changed = False
 
         # Load settings from coordinator if available
         self._load_climate_settings_from_coordinator()
@@ -293,36 +288,65 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             return "rear_defrost"
         return "none"
 
-    def _create_climate_settings(self) -> ClimateSettingsRequestModel:
-        """Build the legacy climate-settings write body.
+    def _build_start_request(self) -> V2RemoteClimateControlRequestModel:
+        """Assemble the V2 ``start`` body from current entity + read state.
 
-        NOTE (2026-07): this legacy PUT body targets the retired
-        /v1/global/remote/climate-settings route and is superseded by the unified
-        POST /v2/remote/climate-control request. It is kept so the control path
-        type-checks; actuation correctness lands with the V2 migration PR.
-
-        Returns:
-            ClimateSettingsRequestModel configured with the specified settings
+        Tier-A extension point: front/rear defroster come from the entity's preset
+        state; steering + per-seat heaters are **echoed** from the current
+        climate-settings read (never invented). Future writable steering (`switch`)
+        / seat (`select`) entities would set instance attrs that this reads instead
+        of echoing — keep the echo as the *fallback*, not hardcoded.
         """
-        # operations() is a deprecated back-compat accessor and now returns []
-        # (the new read payload has no acOperations); rebuild the defrost operation
-        # from the current entity state.
-        ac_operations = [
-            ACOperations(
-                categoryName="defrost",
-                acParameters=[
-                    ACParameters(enabled=self.front_defrost, name="frontDefrost"),
-                    ACParameters(enabled=self.rear_defrost, name="rearDefrost"),
-                ],
-            )
-        ]
+        settings = getattr(self.vehicle, "climate_settings", None)
+        read_heating = getattr(settings, "heating_options", None)
+        read_seats = getattr(settings, "seat_options", None)
 
-        return ClimateSettingsRequestModel(
-            settingsOn=self.climate_settings_on,
-            temperature=self.target_temperature,
-            temperatureUnit="C",
-            acOperations=ac_operations,
+        def _wire(flag: bool | None) -> str | None:
+            return None if flag is None else ("on" if flag else "off")
+
+        heating = HeatingOptionsModel(
+            front_defroster=_wire(self.front_defrost),
+            rear_defogger=_wire(self.rear_defrost),
+            # steering is read-only in Tier A → echo the car's current value.
+            steering_heater=_wire(getattr(read_heating, "steering_heater", None)),
         )
+        seats = None
+        if read_seats is not None:
+            seats = SeatOptionsModel(
+                driver_seat=read_seats.driver_seat,
+                passenger_seat=read_seats.passenger_seat,
+                rear_driver_seat=read_seats.rear_driver_seat,
+                rear_passenger_seat=read_seats.rear_passenger_seat,
+            )
+
+        unit = (
+            "F"
+            if self._attr_temperature_unit == UnitOfTemperature.FAHRENHEIT
+            else "C"
+        )
+        # Only persist defaults when we have a full read to echo — a null-options
+        # body with save_settings=True could clear the car's saved seat/steering.
+        save = read_seats is not None and read_heating is not None
+        return V2RemoteClimateControlRequestModel(
+            command="start",
+            temperature=UnitValueModel(unit=unit, value=self.target_temperature),
+            heating_options=heating,
+            seat_options=seats,
+            save_settings=save,
+        )
+
+    @staticmethod
+    def _command_ok(response: object) -> bool:
+        """Whether a V2 climate-control response reported command success."""
+        payload = getattr(response, "payload", None)
+        return payload is not None and payload.return_code == CLIMATE_COMMAND_OK
+
+    async def _poll_status(self) -> None:
+        """Wake + refetch climate_status and reflect it on the entity."""
+        if await self.vehicle.refresh_climate_status():
+            await self.vehicle.update(only=["climate_status"])
+            self._load_climate_status_from_coordinator()
+            self.async_write_ha_state()
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set new preset mode."""
@@ -341,85 +365,21 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
                 self._attr_front_defrost = False
                 self._attr_rear_defrost = False
 
+            # Applied on the next start (V2 sends the full desired body); no
+            # standalone settings write in Tier A.
             self.async_write_ha_state()
-            self._debounce_send_climate_settings()
 
         except Exception:  # pylint: disable=W0718
             _LOGGER.exception("Error setting preset mode")
 
     async def async_update(self) -> None:
-        """Poll the car for fresh climate status."""
+        """Poll the car for fresh climate status (when climate is on)."""
         if not self.climate_settings_on:
             return
-
         try:
-            # Wake the car, then refetch just climate_status (the envelope-unwrap
-            # bug in vehicle.climate_status is fixed upstream, so no _api bypass).
-            if await self.vehicle.refresh_climate_status():
-                _LOGGER.debug("Climate status refreshed from car")
-                await self.vehicle.update(only=["climate_status"])
-                self._load_climate_status_from_coordinator()
-                self.async_write_ha_state()
-
+            await self._poll_status()
         except Exception:  # pylint: disable=W0718
             _LOGGER.exception("Error updating climate status")
-
-    @callback
-    def _debounce_send_climate_settings(self) -> None:
-        """Debounce climate settings updates to avoid excessive API calls."""
-        # Cancel any pending scheduled call
-        if self._pending_settings_cancel is not None:
-            self._pending_settings_cancel()
-            self._pending_settings_cancel = None
-
-        # Mark that settings have changed
-        self._settings_changed = True
-
-        # Schedule the actual send after a delay using HA's event loop
-        self._pending_settings_cancel = async_call_later(
-            self.hass, SETTINGS_DEBOUNCE_DELAY, self._delayed_send_climate_settings
-        )
-
-    async def _delayed_send_climate_settings(self, _now: Any) -> None:  # noqa: ANN401
-        """Send settings after debounce delay.
-
-        Args:
-            _now: Current time (required by async_call_later, unused)
-        """
-        self._pending_settings_cancel = None
-        if self._settings_changed:
-            self._settings_changed = False
-            # Fired from a timer, not a service call, so there is no UI context
-            # to raise into — log instead of propagating HomeAssistantError.
-            try:
-                await self._send_climate_settings()
-            except HomeAssistantError as err:
-                _LOGGER.error("Debounced climate settings send failed: %s", err)
-
-    async def _send_climate_settings(self) -> None:
-        """Send climate settings to car.
-
-        Raises:
-            HomeAssistantError: if the car/API rejected the settings, so the
-                caller can roll back optimistic state and the failure surfaces
-                in the UI instead of silently leaving a stale "on" tile.
-        """
-        climate_settings = self._create_climate_settings()
-        _LOGGER.debug("Sending climate settings to car: %s", climate_settings)
-        try:
-            status = await self.vehicle._api.update_climate_settings(  # noqa: SLF001
-                self.vehicle.vin, climate_settings
-            )
-        except Exception as err:  # pylint: disable=W0718
-            raise HomeAssistantError(
-                f"Toyota rejected the climate settings: {err}"
-            ) from err
-
-        _LOGGER.debug("API response status: %s", status)
-
-        # Check if the update was successful
-        if not status or (hasattr(status, "status") and status.status == 0):
-            raise HomeAssistantError("Toyota rejected the climate settings")
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target hvac mode."""
@@ -435,10 +395,9 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             return
 
         try:
+            # Local desired state; applied on the next start (V2 sends the full body).
             self._attr_target_temperature = temperature
             self.async_write_ha_state()
-
-            self._debounce_send_climate_settings()
 
         except Exception:  # pylint: disable=W0718
             _LOGGER.exception("Error setting climate temperature")
@@ -452,40 +411,25 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
         await self._turn_off_climate()
 
     async def _turn_on_climate(self) -> None:
-        """Turn on the climate control."""
-        # optimistically turn on the climate device
+        """Turn on climate via a single V2 ``start`` command."""
+        # Optimistically turn on; rolled back if the car rejects the start.
         self._attr_hvac_mode = HVACMode.HEAT_COOL
         self.async_write_ha_state()
 
         _LOGGER.debug("Attempting to turn on climate for %s", self.vehicle.alias)
-
-        # Cancel any pending debounced updates
-        if self._pending_settings_cancel is not None:
-            self._pending_settings_cancel()
-            self._pending_settings_cancel = None
-        self._settings_changed = False
-
         try:
-            # Send settings immediately when turning on
-            await self._send_climate_settings()
-
-            # Now send the engine-start command to actually turn on climate
-            _LOGGER.debug("Sending engine-start command to %s", self.vehicle.alias)
-            status = await self.vehicle._api.send_climate_control_command(  # noqa: SLF001
-                self.vehicle.vin, ClimateControlModel(command="engine-start")
+            response = await self.vehicle._api.send_climate_control_command(  # noqa: SLF001
+                self.vehicle.vin, self._build_start_request()
             )
-
-            # Check if the update was successful
-            if not status or (hasattr(status, "status") and status.status == 0):
-                _LOGGER.debug("Failed to start engine: %s", status)
+            if not self._command_ok(response):
+                _LOGGER.debug("Climate start rejected: %s", response)
                 raise HomeAssistantError(
                     "Toyota did not start the climate. Common causes: the car is "
                     "unlocked, a door/window/trunk is open, a key is inside, or "
                     "climate was already started once since the last ignition."
                 )
         except Exception as err:  # pylint: disable=W0718
-            # Roll back the optimistic "on" so the tile reflects reality instead
-            # of falsely showing the climate running.
+            # Roll back the optimistic "on" so the tile reflects reality.
             self._attr_hvac_mode = HVACMode.OFF
             self.async_write_ha_state()
             if isinstance(err, HomeAssistantError):
@@ -495,38 +439,34 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             ) from err
 
         _LOGGER.debug("Climate control turned on for %s", self.vehicle.alias)
+        # Confirm the actual state (stopped -> starting/running) best-effort.
+        try:
+            await self._poll_status()
+        except Exception:  # pylint: disable=W0718
+            _LOGGER.debug("Post-start status poll failed (non-fatal)", exc_info=True)
 
     async def _turn_off_climate(self) -> None:
-        """Turn off the climate control."""
-        # optimistically turn off the climate device
+        """Turn off climate via a single V2 ``stop`` command."""
+        # Optimistically turn off; the coordinator reconciles actual state on poll.
         self._attr_hvac_mode = HVACMode.OFF
         self.async_write_ha_state()
 
         _LOGGER.debug("Attempting to turn off climate for %s", self.vehicle.alias)
-
         try:
-            # Send the engine-stop command to turn off climate
-            status = await self.vehicle._api.send_climate_control_command(  # noqa: SLF001
-                self.vehicle.vin, ClimateControlModel(command="engine-stop")
+            response = await self.vehicle._api.send_climate_control_command(  # noqa: SLF001
+                self.vehicle.vin,
+                V2RemoteClimateControlRequestModel(command="stop"),
             )
-            if not status or (hasattr(status, "status") and status.status == 0):
-                raise HomeAssistantError("Toyota did not confirm the climate stop")
         except Exception as err:  # pylint: disable=W0718
-            # The stop was not confirmed, so the climate may still be running —
-            # revert to "on" rather than falsely showing it off.
+            # The stop may not have landed — revert to "on" rather than falsely off.
             self._attr_hvac_mode = HVACMode.HEAT_COOL
             self.async_write_ha_state()
-            if isinstance(err, HomeAssistantError):
-                raise
             raise HomeAssistantError(
                 f"Failed to turn off Toyota climate: {err}"
             ) from err
 
+        # A non-000000 on stop is usually benign ("already stopped"); don't error the
+        # tile — the next coordinator poll reconciles the real state via is_on.
+        if not self._command_ok(response):
+            _LOGGER.debug("Climate stop returned non-success: %s", response)
         _LOGGER.debug("Climate control turned off for %s", self.vehicle.alias)
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Clean up when entity is removed."""
-        # Cancel any pending scheduled calls
-        if self._pending_settings_cancel is not None:
-            self._pending_settings_cancel()
-            self._pending_settings_cancel = None

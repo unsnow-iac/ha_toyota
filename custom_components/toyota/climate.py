@@ -364,9 +364,6 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
         except Exception:  # pylint: disable=W0718
             _LOGGER.exception("Error updating climate status")
 
-        except Exception:  # pylint: disable=W0718
-            _LOGGER.exception("Error updating climate settings")
-
     @callback
     def _debounce_send_climate_settings(self) -> None:
         """Debounce climate settings updates to avoid excessive API calls."""

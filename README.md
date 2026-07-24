@@ -5,13 +5,24 @@
 [![CodeQL](https://github.com/pytoyoda/ha_toyota/actions/workflows/codeql.yml/badge.svg)](https://github.com/pytoyoda/ha_toyota/actions/workflows/codeql.yml)
 
 > [!IMPORTANT]
-> **Interim community fork.** This is a temporary patched build of
-> [`pytoyoda/ha_toyota`](https://github.com/pytoyoda/ha_toyota) that fixes the 2026
-> Toyota API migration (read endpoints returning 403/500) ahead of the upstream
-> release. Add this repo to HACS as a **custom repository** and install the latest
-> **Release**. It will be **retired** once upstream ships the fix — track
-> [pytoyoda/ha_toyota#318](https://github.com/pytoyoda/ha_toyota/issues/318); at
-> that point, redownload the official integration in HACS.
+> **RETIRED — the fix is upstream. Please move back to the official integration.**
+>
+> This was a temporary patched build carrying the 2026 Toyota API-migration fix (the
+> `/v1/global/remote/*` read family being retired server-side → `APIGW-403`) ahead of the
+> upstream release. That release now exists:
+> **[`pytoyoda/ha_toyota` v2.5.0](https://github.com/pytoyoda/ha_toyota/releases/tag/v2.5.0)**
+> (24 Jul 2026), pinning `pytoyoda>=5.2.0` — the complete migration
+> ([pytoyoda#267](https://github.com/pytoyoda/pytoyoda/issues/267): PRs #268/#269/#270/#271,
+> plus the ha_toyota climate consumer
+> [#337](https://github.com/pytoyoda/ha_toyota/pull/337)).
+>
+> **How to switch:** HACS → remove this custom repository → install/update
+> **Toyota EU community integration v2.5.0** → restart Home Assistant. Your config entry and
+> entity IDs are preserved; no re-auth needed.
+>
+> The releases here stay published so existing installs don't break mid-upgrade, but this fork
+> receives no further fixes. Tracking issue:
+> [pytoyoda/ha_toyota#318](https://github.com/pytoyoda/ha_toyota/issues/318) (closed/resolved).
 
 <p align="center">
     <img src="https://brands.home-assistant.io/_/toyota/icon@2x.png" alt="logo" height="200">

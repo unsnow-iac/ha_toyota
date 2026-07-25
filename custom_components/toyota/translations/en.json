@@ -53,6 +53,11 @@
     }
   },
   "entity": {
+    "lock": {
+      "door_lock": {
+        "name": "Door lock"
+      }
+    },
     "device_tracker": {
       "parking_location": {
         "name": "Parking location"

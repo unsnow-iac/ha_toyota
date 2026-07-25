@@ -1,22 +1,41 @@
-"""Per-vehicle refresh-status button.
+"""Toyota button entities.
 
-Wraps the toyota.refresh_vehicle_status service with a one-tap dashboard
-entity. Each vehicle gets one button; pressing it triggers the same wake
-POST + status poll that the service does.
+Per-vehicle buttons:
+
+* ``refresh_vehicle_status`` — one-tap wrapper around the
+  ``toyota.refresh_vehicle_status`` service (wake POST + status poll).
+* ``refresh_recent_trips`` — one-tap wrapper around
+  ``toyota.refresh_recent_trips``.
+* ``buzzer`` — fires the ``BUZZER_WARNING`` remote command (sounds the car's
+  locator buzzer).
+* ``hazard`` — fires the ``HAZARD_ON`` remote command (flashes the hazard
+  lights, which the car then turns off again on its own).
+
+The buzzer and hazard buttons are the "find my car" primitives on this
+platform. They are momentary fire-and-forget actions with no state to track
+(hazard self-stops; there is no working HAZARD_OFF), so they are buttons
+rather than switches. Compose them into a combined "find my car" action with
+a Home Assistant script if you want buzzer + flash together.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
+from pytoyoda.models.endpoints.command import CommandType
 
 from .const import (
     CONF_MAX_RECENT_TRIPS,
     DEFAULT_MAX_RECENT_TRIPS,
     DOMAIN,
+    HTTP_ERROR_THRESHOLD,
 )
 from .entity import ToyotaBaseEntity
+from .utils import record_command_result
+
+_LOGGER = logging.getLogger(__name__)
 
 # Default fetch size for the manual button when auto-fetch is off
 # (max_recent_trips=0). Picked as a sensible "show me the last few drives".
@@ -45,6 +64,20 @@ REFRESH_RECENT_TRIPS_BUTTON_DESCRIPTION = ButtonEntityDescription(
     icon="mdi:refresh-auto",
 )
 
+BUZZER_BUTTON_DESCRIPTION = ButtonEntityDescription(
+    key="buzzer",
+    translation_key="buzzer",
+    name="Buzzer",
+    icon="mdi:bullhorn",
+)
+
+HAZARD_BUTTON_DESCRIPTION = ButtonEntityDescription(
+    key="hazard",
+    translation_key="hazard",
+    name="Hazard lights",
+    icon="mdi:hazard-lights",
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -71,6 +104,22 @@ async def async_setup_entry(
                 entry_id=entry.entry_id,
                 vehicle_index=index,
                 description=REFRESH_RECENT_TRIPS_BUTTON_DESCRIPTION,
+            )
+        )
+        buttons.append(
+            ToyotaBuzzerButton(
+                coordinator=coordinator,
+                entry_id=entry.entry_id,
+                vehicle_index=index,
+                description=BUZZER_BUTTON_DESCRIPTION,
+            )
+        )
+        buttons.append(
+            ToyotaHazardButton(
+                coordinator=coordinator,
+                entry_id=entry.entry_id,
+                vehicle_index=index,
+                description=HAZARD_BUTTON_DESCRIPTION,
             )
         )
     async_add_entities(buttons)
@@ -131,3 +180,65 @@ class ToyotaRefreshRecentTripsButton(ToyotaBaseEntity, ButtonEntity):
             {"device_id": [device.id], "limit": limit},
             blocking=False,
         )
+
+class ToyotaRemoteCommandButton(ToyotaBaseEntity, ButtonEntity):
+    """Base for buttons that fire a single fire-and-forget remote command.
+
+    Subclasses set ``_command``. Toyota signals failure either by raising
+    (e.g. an unsupported command 400s) or, less often, by a >=400 ``code`` on
+    the returned status; both are logged. A successful command returns a
+    status whose ``code`` is None, so we do not treat None as an error.
+    """
+
+    _command: CommandType
+
+    async def async_press(self) -> None:
+        """Send this button's remote command to the car."""
+        command = self._command
+        try:
+            _LOGGER.debug("Sending %s to %s", command.value, self.vehicle.alias)
+            status = await self.vehicle.post_command(command)
+        except Exception as err:  # pylint: disable=W0718
+            _LOGGER.exception(
+                "Error sending %s to %s", command.value, self.vehicle.alias
+            )
+            record_command_result(
+                self.hass,
+                self._entry_id,
+                self.vehicle.vin,
+                command.value,
+                ok=False,
+                detail=repr(err),
+            )
+            return
+        code = getattr(status, "code", None)
+        rejected = code is not None and code >= HTTP_ERROR_THRESHOLD
+        record_command_result(
+            self.hass,
+            self._entry_id,
+            self.vehicle.vin,
+            command.value,
+            ok=not rejected,
+            code=code,
+            detail=getattr(status, "message", None),
+        )
+        if rejected:
+            _LOGGER.warning(
+                "%s for %s returned code %s: %s",
+                command.value,
+                self.vehicle.alias,
+                code,
+                getattr(status, "message", None),
+            )
+
+
+class ToyotaBuzzerButton(ToyotaRemoteCommandButton):
+    """Sound the car's locator buzzer (BUZZER_WARNING)."""
+
+    _command = CommandType.BUZZER_WARNING
+
+
+class ToyotaHazardButton(ToyotaRemoteCommandButton):
+    """Flash the hazard lights (HAZARD_ON; the car turns them off itself)."""
+
+    _command = CommandType.HAZARD_ON

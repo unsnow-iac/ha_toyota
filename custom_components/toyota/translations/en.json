@@ -158,6 +158,12 @@
       },
       "refresh_recent_trips": {
         "name": "Refresh recent trips"
+      },
+      "buzzer": {
+        "name": "Buzzer"
+      },
+      "hazard": {
+        "name": "Hazard lights"
       }
     },
     "binary_sensor": {

@@ -4,13 +4,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from .const import CONF_BRAND_MAPPING
+from homeassistant.util import dt as dt_util
+
+from .const import CONF_BRAND_MAPPING, DOMAIN, REMOTE_DISPLAY_NAMES
 
 if TYPE_CHECKING:
     from datetime import timedelta
 
+    from homeassistant.core import HomeAssistant
     from pytoyoda.models.endpoints.vehicle_guid import VehicleGuidModel
     from pytoyoda.models.summary import Summary
 
@@ -145,3 +148,83 @@ def charging_status_key(status: str) -> str:
     if status == "chargeComplete":
         return "charge_complete"
     return status
+
+
+def decode_remote_display(value: Any) -> str:  # noqa: ANN401
+    """Decode a RemoteDisplayStatus value to its enum name.
+
+    ``remote_display`` arrives as an int, a numeric string, or (rarely) an
+    already-decoded string. ``7`` / ``ACTIVATED`` is the only state in which the
+    car will actually act on a remote command; surfaced in diagnostics.
+    """
+    if isinstance(value, bool):  # bool is an int subclass — guard first
+        return f"<non-status {value!r}>"
+    if isinstance(value, int):
+        return REMOTE_DISPLAY_NAMES.get(value, f"<unknown {value}>")
+    if isinstance(value, str):
+        if value.isdigit():
+            return REMOTE_DISPLAY_NAMES.get(int(value), f"<unknown {value}>")
+        return value
+    if value is None:
+        return "<missing>"
+    return "<non-status, see raw>"
+
+
+def predict_climate_class(features: Any, ext: Any) -> tuple[str, str]:  # noqa: ANN401
+    """Predict a car's remote-climate archetype from its capability flags.
+
+    Ported from nledenyi's climate probe. Lets a diagnostics reader see which
+    climate code path a car should follow without replaying endpoint calls.
+    Returns ``(class, human_hint)``.
+    """
+    cse = getattr(features, "climate_start_engine", False)
+    cc = getattr(ext, "climate_capable", False)
+    ctf = getattr(ext, "climate_temperature_control_full", False)
+    ctl = getattr(ext, "climate_temperature_control_limited", False)
+    ecc = getattr(ext, "econnect_climate_capable", False)
+    res = getattr(ext, "remote_engine_start_stop", False)
+
+    if cc and (ctf or ctl):
+        return "FULL_CLIMATE", "target temp + on/off via V2 climate-control"
+    if cc and not (ctf or ctl):
+        return "CLIMATE_NO_TEMP", "on/off + defrost toggle; no target temp"
+    if res:
+        return "ENGINE_PREHEAT", "engine-preheat on/off only; auto-off after ~20 min"
+    if ecc:
+        return "ECONNECT", "Stellantis-derived variant; treat like FULL_CLIMATE"
+    if cse:
+        return "LEGACY_FLAG", (
+            "features.climate_start_engine only; behaviour depends on extended flags"
+        )
+    return "NO_CLIMATE", "no remote-climate flags set"
+
+
+def record_command_result(  # noqa: PLR0913
+    hass: HomeAssistant,
+    entry_id: str,
+    vin: str | None,
+    command: str,
+    *,
+    ok: bool | None,
+    code: Any = None,  # noqa: ANN401
+    detail: str | None = None,
+) -> None:
+    """Record the outcome of a remote command in the per-entry diagnostics bucket.
+
+    Best-effort and never raises into the command path: diagnostics surface this
+    so a tester's downloaded dump alone explains a command the gateway accepted
+    but the car did not act on.
+    """
+    if not vin:
+        return
+    try:
+        bucket = hass.data[DOMAIN][f"{entry_id}_diag"]
+    except (KeyError, TypeError):
+        return
+    bucket.setdefault("last_command_result_per_vin", {})[vin] = {
+        "command": command,
+        "ok": ok,
+        "code": code,
+        "detail": detail,
+        "at": dt_util.utcnow().isoformat(),
+    }

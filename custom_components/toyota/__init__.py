@@ -264,6 +264,10 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         "consecutive_failed_wakes_per_vin",
         "consecutive_post_rejections_per_vin",
         "soft_disabled_per_vin",
+        # Outcome of the most recent remote command (climate start/stop, lock,
+        # buzzer, hazard) per VIN, written by utils.record_command_result and
+        # surfaced in diagnostics. See {command, ok, code, detail, at}.
+        "last_command_result_per_vin",
         "remaining_post_cycles_per_vin",
         "last_status_refresh_state_per_vin",
         "last_status_refresh_trigger_per_vin",

@@ -37,6 +37,9 @@ class ToyotaBaseEntity(CoordinatorEntity):
         super().__init__(coordinator)  # type: ignore[reportArgumentType, arg-type]
 
         self.index = vehicle_index
+        # Stored so command entities can locate this config entry's diagnostics
+        # bucket (hass.data[DOMAIN][f"{entry_id}_diag"]) to record command
+        # outcomes; see utils.record_command_result.
         self._entry_id = entry_id
         self.entity_description = description
         self.vehicle: Vehicle = coordinator.data[self.index]["data"]

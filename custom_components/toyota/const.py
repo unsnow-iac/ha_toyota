@@ -68,6 +68,29 @@ CONF_MAX_RECENT_TRIPS = "max_recent_trips"
 DEFAULT_MAX_RECENT_TRIPS = 0
 MAX_RECENT_TRIPS_LIMIT = 20
 
+# Remote-command result handling. post_command() returns an HTTP-ish status
+# code; >= this threshold (any 4xx/5xx) means the gateway rejected the command.
+HTTP_ERROR_THRESHOLD = 400
+
+# RemoteDisplayStatus enum (reverse-engineered from the MyToyota APK, where the
+# ordinal == backendValue). The app gates ALL remote commands on this being
+# ACTIVATED (7); in any other state the gateway may ACCEPT a command while the
+# car silently does nothing. Surfaced in diagnostics so a "command ran but
+# nothing happened" report is explainable without a debug-log round-trip.
+REMOTE_DISPLAY_NAMES = {
+    0: "UNKNOWN",
+    1: "AUTH_REQUIRED",
+    2: "SUBSCRIPTION_CANCELLED_REMOTE_USER",
+    3: "SUBSCRIPTION_CANCELLED_PRIMARY_USER",
+    4: "FAILED",
+    5: "PENDING",
+    6: "ERROR",
+    7: "ACTIVATED",
+    8: "SUBSCRIPTION_EXPIRED_REMOTE_USER",
+    9: "SUBSCRIPTION_EXPIRED_PRIMARY_USER",
+    10: "STOLEN_LOST_VEHICLE",
+}
+
 # DEFAULTS
 DEFAULT_LOCALE = "en-gb"
 

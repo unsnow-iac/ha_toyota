@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 from .const import DOMAIN
 from .entity import ToyotaBaseEntity
-from .utils import vehicle_has_climate_capability
+from .utils import record_command_result, vehicle_has_climate_capability
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=120)
@@ -493,8 +493,27 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
 
         Keeps the request-build + success-check in one place.
         """
-        response = await self.vehicle.set_climate(self._build_start_request())
+        try:
+            response = await self.vehicle.set_climate(self._build_start_request())
+        except Exception as err:  # pylint: disable=W0718
+            record_command_result(
+                self.hass,
+                self._entry_id,
+                self.vehicle.vin,
+                "climate_start",
+                ok=False,
+                detail=repr(err),
+            )
+            raise
         ok = self._command_ok(response)
+        record_command_result(
+            self.hass,
+            self._entry_id,
+            self.vehicle.vin,
+            "climate_start",
+            ok=ok,
+            code=getattr(getattr(response, "payload", None), "return_code", None),
+        )
         if not ok:
             _LOGGER.debug("Climate start rejected: %s", response)
             msg = (
@@ -545,12 +564,28 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
                 V2RemoteClimateControlRequestModel(command="stop"),
             )
         except Exception as err:  # pylint: disable=W0718
+            record_command_result(
+                self.hass,
+                self._entry_id,
+                self.vehicle.vin,
+                "climate_stop",
+                ok=False,
+                detail=repr(err),
+            )
             # The stop may not have landed — revert to "on" rather than falsely off.
             self._attr_hvac_mode = HVACMode.HEAT_COOL
             self.async_write_ha_state()
             msg = f"Failed to turn off Toyota climate: {err}"
             raise HomeAssistantError(msg) from err
 
+        record_command_result(
+            self.hass,
+            self._entry_id,
+            self.vehicle.vin,
+            "climate_stop",
+            ok=self._command_ok(response),
+            code=getattr(getattr(response, "payload", None), "return_code", None),
+        )
         # A non-000000 on stop is usually benign ("already stopped"); don't error the
         # tile — the next coordinator poll reconciles the real state via is_on.
         if not self._command_ok(response):

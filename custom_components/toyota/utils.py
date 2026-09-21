@@ -261,5 +261,5 @@ def record_command_result(  # noqa: PLR0913
         "ok": ok,
         "code": code,
         "detail": detail,
-        "at": dt_util.utcnow().isoformat(),
+        "at": dt_util.now().isoformat(),
     }

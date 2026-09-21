@@ -243,7 +243,11 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         await client.login()
     except ToyotaLoginError as ex:
         raise ConfigEntryAuthFailed(ex) from ex
-    except (httpx.ConnectTimeout, httpcore.ConnectTimeout) as ex:
+    except (
+        httpx.TransportError,
+        httpcore.NetworkError,
+        httpcore.TimeoutException,
+    ) as ex:
         msg = "Unable to connect to Toyota Connected Services"
         raise ConfigEntryNotReady(msg) from ex
 
@@ -353,6 +357,10 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
     exception_code_map: list[tuple[tuple[type[BaseException], ...], str]] = [
         ((httpx.ConnectTimeout, httpcore.ConnectTimeout), "connect timeout"),
         ((httpx.ReadTimeout, asyncioexceptions.TimeoutError), "read timeout"),
+        (
+            (httpx.TransportError, httpcore.NetworkError, httpcore.TimeoutException),
+            "transport error",
+        ),
         ((asyncioexceptions.CancelledError,), "cancelled"),
         ((ToyotaApiError,), "api error"),
         ((ToyotaLoginError,), "login error"),
@@ -649,10 +657,10 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
                 )
             except (
                 ToyotaApiError,
-                httpx.ConnectTimeout,
-                httpcore.ConnectTimeout,
+                httpx.TransportError,
+                httpcore.NetworkError,
+                httpcore.TimeoutException,
                 asyncioexceptions.TimeoutError,
-                httpx.ReadTimeout,
             ):
                 # 429s and timeouts here are expected mid-wake; loop again.
                 continue
@@ -802,7 +810,13 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
                 _call_tagged("vehicle.update", vin, vehicle.update(skip=["status"])),
                 STATUS_FETCH_BUDGET_S,
             )
-        except (ToyotaApiError, ToyotaInternalError) as ex:
+        except (
+            ToyotaApiError,
+            ToyotaInternalError,
+            httpx.TransportError,
+            httpcore.NetworkError,
+            httpcore.TimeoutException,
+        ) as ex:
             _LOGGER.warning(
                 "vehicle.update partial failure for vin=...%s (%s), continuing",
                 (vin or "")[-6:],
@@ -920,9 +934,9 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
                 asyncioexceptions.TimeoutError,
                 ToyotaApiError,
                 ToyotaInternalError,
-                httpx.ConnectTimeout,
-                httpcore.ConnectTimeout,
-                httpx.ReadTimeout,
+                httpx.TransportError,
+                httpcore.NetworkError,
+                httpcore.TimeoutException,
                 ValidationError,
             ) as ex:
                 # Degrade on ANY transient summary failure (matches the family
@@ -987,11 +1001,11 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
             raise ConfigEntryAuthFailed(ex) from ex
         except (
             ToyotaApiError,
-            httpx.ConnectTimeout,
-            httpcore.ConnectTimeout,
+            httpx.TransportError,
+            httpcore.NetworkError,
+            httpcore.TimeoutException,
             asyncioexceptions.CancelledError,
             asyncioexceptions.TimeoutError,
-            httpx.ReadTimeout,
         ) as ex:
             vehicles = _recover_fleet_fetch_failure(code=_error_code(ex), ex=ex)
         except ValidationError:
@@ -1050,11 +1064,11 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         except (
             ToyotaApiError,
             ToyotaInternalError,
-            httpx.ConnectTimeout,
-            httpcore.ConnectTimeout,
+            httpx.TransportError,
+            httpcore.NetworkError,
+            httpcore.TimeoutException,
             asyncioexceptions.CancelledError,
             asyncioexceptions.TimeoutError,
-            httpx.ReadTimeout,
             ValidationError,
             TypeError,
         ) as ex:
@@ -1123,6 +1137,16 @@ async def async_setup_entry(  # pylint: disable=too-many-statements # noqa: PLR0
         )
         if not any_served:
             msg = "Toyota refresh failed for all vehicles"
+            # HA logs a first-refresh UpdateFailed at DEBUG only, so a persistent
+            # failure (empty or unparsable fleet) was invisible in the live log
+            # while the entry sat in setup_retry. Surface it with the per-VIN
+            # error code so the next occurrence is diagnosable at a glance.
+            _LOGGER.warning(
+                "%s (last errors per VIN: %s)",
+                msg,
+                {vin: err[1] for vin, err in last_error_per_vin.items() if err}
+                or "none",
+            )
             raise UpdateFailed(msg)
 
         _commit_fetch_timestamps(vehicle_informations)

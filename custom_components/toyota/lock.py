@@ -15,6 +15,7 @@ from pytoyoda.models.endpoints.command import CommandType
 
 from .const import DOMAIN
 from .entity import ToyotaBaseEntity
+from .utils import record_command_result
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -188,6 +189,9 @@ class ToyotaDoorLock(ToyotaBaseEntity, LockEntity):
         self._cancel_assumption: Callable[[], None] | None = None
         self._attr_is_locking = False
         self._attr_is_unlocking = False
+        # Reported door-lock state captured when the command was sent, used to
+        # detect when telemetry has genuinely moved and release the assumption.
+        self._telemetry_at_command: bool | None = None
         self.async_on_remove(self._clear_assumption)
 
     @property
@@ -214,6 +218,7 @@ class ToyotaDoorLock(ToyotaBaseEntity, LockEntity):
     def _clear_assumption(self, *, keep_freshness: bool = False) -> None:
         """Discard a pending optimistic state and its expiry callback."""
         self._assumed_locked = None
+        self._telemetry_at_command = None
         if not keep_freshness:
             self._command_status_timestamp = None
             self._command_started_at = None
@@ -242,7 +247,23 @@ class ToyotaDoorLock(ToyotaBaseEntity, LockEntity):
         self.async_write_ha_state()
 
     def _handle_coordinator_update(self) -> None:
-        """Use only a new lock payload to retire an optimistic state."""
+        """Retire an optimistic state once telemetry has actually moved.
+
+        Toyota's /status lags a command by minutes, so a fetch alone is not
+        evidence the car caught up. A reading that differs from the one
+        captured when the command went out is, so we trust telemetry again
+        then; a newer status timestamp (upstream's original signal) also
+        retires the assumption. Only two *known* readings can differ — an
+        unknown reading is not movement and must keep the safeguard.
+        """
+        if self._assumed_locked is not None:
+            reported = _door_lock_state(self.coordinator.data[self.index]["data"])
+            if (
+                reported is not None
+                and self._telemetry_at_command is not None
+                and reported != self._telemetry_at_command
+            ):
+                self._clear_assumption()
         super()._handle_coordinator_update()
         if self._requires_fresh_status and self._status_is_new_since_command():
             self._clear_assumption()
@@ -264,16 +285,39 @@ class ToyotaDoorLock(ToyotaBaseEntity, LockEntity):
             try:
                 response = await self.vehicle.post_command(command)
             except Exception as err:
+                record_command_result(
+                    self.hass,
+                    self._entry_id,
+                    self.vehicle.vin,
+                    command.value,
+                    ok=False,
+                    detail=repr(err),
+                )
                 msg = "Toyota could not send the door command"
                 raise HomeAssistantError(msg) from err
 
-            if reason := _command_failure_reason(response):
+            # A 200 carrying a >=400 code, an errors payload or a failure
+            # status is a rejection, not a success.
+            reason = _command_failure_reason(response)
+            record_command_result(
+                self.hass,
+                self._entry_id,
+                self.vehicle.vin,
+                command.value,
+                ok=reason is None,
+                code=getattr(response, "code", None),
+                detail=reason or getattr(response, "message", None),
+            )
+            if reason:
                 raise HomeAssistantError(reason)
 
             self._command_generation += 1
             generation = self._command_generation
             self._clear_assumption()
             self._assumed_locked = locked
+            # Capture the reported state now so the coordinator update can
+            # tell when telemetry has actually moved away from it.
+            self._telemetry_at_command = _door_lock_state(self.vehicle)
             self._command_status_timestamp = _lock_timestamp(self.vehicle)
             # Toyota's status timestamp is commonly second-granular. Keep the
             # same precision here so a status reported in the command second

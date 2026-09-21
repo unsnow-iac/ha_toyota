@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 from .const import DOMAIN
 from .entity import ToyotaBaseEntity
+from .utils import record_command_result
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=120)
@@ -519,6 +520,14 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
         """
         response = await self.vehicle.set_climate(self._build_start_request())
         ok = self._command_ok(response)
+        record_command_result(
+            self.hass,
+            self._entry_id,
+            self.vehicle.vin,
+            "climate_start",
+            ok=ok,
+            code=getattr(getattr(response, "payload", None), "return_code", None),
+        )
         if not ok:
             _LOGGER.debug("Climate start rejected: %s", response)
             msg = (
@@ -575,6 +584,14 @@ class ToyotaClimate(ToyotaBaseEntity, ClimateEntity):
             msg = f"Failed to turn off Toyota climate: {err}"
             raise HomeAssistantError(msg) from err
 
+        record_command_result(
+            self.hass,
+            self._entry_id,
+            self.vehicle.vin,
+            "climate_stop",
+            ok=self._command_ok(response),
+            code=getattr(getattr(response, "payload", None), "return_code", None),
+        )
         # A non-000000 on stop is usually benign ("already stopped"); don't error the
         # tile — the next coordinator poll reconciles the real state via is_on.
         if not self._command_ok(response):

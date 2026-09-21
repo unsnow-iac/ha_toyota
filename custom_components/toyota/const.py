@@ -104,6 +104,10 @@ CONF_MAX_RECENT_TRIPS = "max_recent_trips"
 DEFAULT_MAX_RECENT_TRIPS = 0
 MAX_RECENT_TRIPS_LIMIT = 20
 
+# Remote-command result handling. post_command() returns an HTTP-ish status
+# code; >= this threshold (any 4xx/5xx) means the gateway rejected the command.
+HTTP_ERROR_THRESHOLD = 400
+
 # DEFAULTS
 DEFAULT_LOCALE = "en-gb"
 

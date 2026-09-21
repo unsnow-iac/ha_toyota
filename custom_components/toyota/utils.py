@@ -6,11 +6,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .const import CONF_BRAND_MAPPING, REMOTE_DISPLAY_NAMES
+from homeassistant.util import dt as dt_util
+
+from .const import CONF_BRAND_MAPPING, DOMAIN, REMOTE_DISPLAY_NAMES
 
 if TYPE_CHECKING:
     from datetime import timedelta
 
+    from homeassistant.core import HomeAssistant
     from pytoyoda.models.endpoints.vehicle_guid import VehicleGuidModel
     from pytoyoda.models.summary import Summary
 
@@ -199,3 +202,34 @@ def predict_climate_class(features: Any, ext: Any) -> tuple[str, str]:  # noqa: 
             "features.climate_start_engine only; behaviour depends on extended flags"
         )
     return "NO_CLIMATE", "no remote-climate flags set"
+
+
+def record_command_result(  # noqa: PLR0913
+    hass: HomeAssistant,
+    entry_id: str,
+    vin: str | None,
+    command: str,
+    *,
+    ok: bool | None,
+    code: Any = None,  # noqa: ANN401
+    detail: str | None = None,
+) -> None:
+    """Record the outcome of a remote command in the per-entry diagnostics bucket.
+
+    Best-effort and never raises into the command path: diagnostics surface this
+    so a tester's downloaded dump alone explains a command the gateway accepted
+    but the car did not act on.
+    """
+    if not vin:
+        return
+    try:
+        bucket = hass.data[DOMAIN][f"{entry_id}_diag"]
+    except (KeyError, TypeError):
+        return
+    bucket.setdefault("last_command_result_per_vin", {})[vin] = {
+        "command": command,
+        "ok": ok,
+        "code": code,
+        "detail": detail,
+        "at": dt_util.utcnow().isoformat(),
+    }

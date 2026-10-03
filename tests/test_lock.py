@@ -317,3 +317,45 @@ async def test_lock_uses_existing_vehicle_wake_service(hass) -> None:
 
     assert calls == [{"device_id": [device.id]}]
     entity._clear_assumption()
+
+
+@pytest.mark.asyncio
+async def test_movement_release_follows_own_vin_after_reorder(hass) -> None:
+    """A sibling's lock state must not confirm this car's pending command."""
+    vehicle = _Vehicle(capabilities={"extended": True})
+    before = datetime.now(UTC) - timedelta(minutes=1)
+    vehicle.set_status(before, {"driver": "unlocked"})
+    entity = _entity(hass, vehicle)
+    own_data = entity.coordinator.data[0]
+    sibling = _Vehicle()
+    sibling.vin = "JTDBR32E720000002"
+    sibling.set_status(before, {"driver": "locked"})
+
+    await entity.async_lock()
+    entity.coordinator.data = [{**own_data, "data": sibling}, own_data]
+    entity._handle_coordinator_update()
+    assert entity.assumed_state is True
+    assert entity.vehicle is vehicle
+
+    # Movement still confirms the command even when Toyota repeats its timestamp.
+    vehicle.set_status(before, {"driver": "locked"})
+    entity._handle_coordinator_update()
+    assert entity.assumed_state is False
+    assert entity.is_locked is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_data", [[], None])
+async def test_missing_vehicle_keeps_pending_lock_assumption(hass, missing_data) -> None:
+    """A missing poll must not crash or falsely confirm a lock command."""
+    vehicle = _Vehicle(capabilities={"extended": True})
+    vehicle.set_status(datetime.now(UTC) - timedelta(minutes=1), {"driver": "unlocked"})
+    entity = _entity(hass, vehicle)
+
+    await entity.async_lock()
+    entity.coordinator.data = missing_data
+    entity._handle_coordinator_update()
+    assert entity.available is False
+    assert entity.assumed_state is True
+    assert entity.vehicle is vehicle
+    entity._clear_assumption()

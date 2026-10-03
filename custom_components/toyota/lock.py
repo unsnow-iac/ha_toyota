@@ -210,8 +210,11 @@ class ToyotaDoorLock(ToyotaBaseEntity, LockEntity):
         retires the assumption. Only two *known* readings can differ — an
         unknown reading is not movement and must keep the safeguard.
         """
-        if self._assumed_locked is not None:
-            reported = _door_lock_state(self.coordinator.data[self.index]["data"])
+        if (
+            self._assumed_locked is not None
+            and (vd := self._vehicle_data()) is not None
+        ):
+            reported = _door_lock_state(vd["data"])
             if (
                 reported is not None
                 and self._telemetry_at_command is not None
